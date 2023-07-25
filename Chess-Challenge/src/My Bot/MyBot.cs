@@ -10,8 +10,10 @@ public class MyBot : IChessBot
     int[] pieceValues = { 0, 100, 300, 330, 500, 900, 10000 };
     readonly int maxPieceSum;
 
-    int m_depth = 3;
+    int m_depth = 4;
     int maxMillisPerTurn;
+
+    Dictionary<ulong, int> scoreMap = new Dictionary<ulong, int>();
 
     public MyBot()
     {
@@ -20,10 +22,11 @@ public class MyBot : IChessBot
 
     public Move Think(Board board, Timer timer)
     {
+        scoreMap.Clear();
         int pieces = BitboardHelper.GetNumberOfSetBits(board.AllPiecesBitboard);
-        if (pieces < 15) m_depth = 4;
-        else if (pieces <= 10) m_depth = 5;
-        else if (pieces <= 8) m_depth = 6;
+        if (pieces < 15) m_depth = 5;
+        else if (pieces <= 10) m_depth = 6;
+        else if (pieces <= 8) m_depth = 7;
         else if (pieces <= 6) m_depth = 8;
 
         maxMillisPerTurn = timer.MillisecondsRemaining / 10;
@@ -55,14 +58,23 @@ public class MyBot : IChessBot
         if (board.IsInCheckmate()) return currentDepth % 2 == 0 ? -maxPieceSum : maxPieceSum;
         if (board.IsInsufficientMaterial() || board.IsRepeatedPosition() || board.FiftyMoveCounter == 50 || board.IsDraw()) return 0;
 
-        int boardScore = (currentDepth % 2 == 0) ^ board.IsWhiteToMove ? -EvalMaterial(board) : EvalMaterial(board);
-        if (currentDepth >= maxDepth) return boardScore;
+        if (scoreMap.ContainsKey(board.ZobristKey))
+        {
+            return scoreMap[board.ZobristKey];
+        }
+        if (currentDepth >= maxDepth)
+        {
+            int boardScore = (currentDepth % 2 == 0) ^ board.IsWhiteToMove ? -EvalMaterial(board) : EvalMaterial(board);
+            scoreMap.Add(board.ZobristKey, boardScore);
+            return boardScore;
+        }
 
         int bestScore = int.MinValue;
         foreach (Move move in board.GetLegalMoves().OrderByDescending(m => pieceValues[(int)m.MovePieceType]))
         {
             board.MakeMove(move);
-            int score = (int) (CalcRecursive(board, timer, maxDepth, currentDepth + 1) * 0.9 + boardScore);
+            int score = CalcRecursive(board, timer, maxDepth, currentDepth + 1);
+            int score = (int)(CalcRecursive(board, timer, maxDepth, currentDepth + 1) * 0.9 + boardScore);
             board.UndoMove(move);
             if (score > bestScore) bestScore = score;
             if (timer.MillisecondsElapsedThisTurn > maxMillisPerTurn) return bestScore;
@@ -73,7 +85,7 @@ public class MyBot : IChessBot
     Move SelectBestMove(Board board, List<Move> moves)
     {
         Move bestMove = moves[new Random().Next(moves.Count)];
-        int bestValue = -100_000;
+        int bestValue = int.MinValue;
 
         foreach (Move move in moves)
         {
