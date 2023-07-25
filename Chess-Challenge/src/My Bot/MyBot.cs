@@ -18,11 +18,11 @@ public class MyBot : IChessBot
         {
             m_depth = 4;
         }
-        else if (pieces < 10)
+        else if (pieces <= 10)
         {
             m_depth = 5;
         }
-        else if (pieces < 5)
+        else if (pieces <= 6)
         {
             m_depth = 8;
         }
@@ -59,7 +59,7 @@ public class MyBot : IChessBot
         {
             return currentDepth % 2 == 0 ? -200_000 : 200_000;
         }
-        if (board.IsInsufficientMaterial() || board.IsRepeatedPosition() || board.FiftyMoveCounter == 50)
+        if (board.IsInsufficientMaterial() || board.IsRepeatedPosition() || board.FiftyMoveCounter == 50 || board.IsDraw())
         {
             return 0;
         }
