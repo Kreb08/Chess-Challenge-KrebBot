@@ -1,4 +1,5 @@
-﻿using ChessChallenge.API;
+﻿//#define LOGGING
+using ChessChallenge.API;
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -7,22 +8,25 @@ using System.Numerics;
 public class MyBot : IChessBot
 {
     // Piece values: null, pawn, knight, bishop, rook, queen, king
-    int[] pieceValues = { 0, 100, 300, 330, 500, 900, 10000 };
+    private int[] pieceValues = { 0, 100, 300, 330, 500, 900, 10000 };
+
+    private const byte INVALID = 0, EXACT = 1, LOWERBOUND = 2, UPPERBOUND = 3;
+    private const ulong k_TpMask = 0x7FFFFF; //4.7 million entries, likely consuming about 151 MB
+    private Transposition[] transposTable; // ref  m_TPTable[zHash & k_TpMask]
+
     readonly int maxPieceSum;
 
     int m_depth = 4;
     int maxMillisPerTurn;
 
-    Dictionary<ulong, int> scoreMap = new Dictionary<ulong, int>();
-
     public MyBot()
     {
+        transposTable = new Transposition[k_TpMask + 1];
         maxPieceSum = pieceValues[1] * 8 + pieceValues[2] * 2 + pieceValues[3] * 2 + pieceValues[4] * 2 + pieceValues[5] + pieceValues[6];
     }
 
     public Move Think(Board board, Timer timer)
     {
-        scoreMap.Clear();
         int pieces = BitboardHelper.GetNumberOfSetBits(board.AllPiecesBitboard);
         if (pieces < 15) m_depth = 5;
         else if (pieces <= 10) m_depth = 6;
@@ -55,17 +59,19 @@ public class MyBot : IChessBot
 
     int CalcRecursive(Board board, Timer timer, int maxDepth, int currentDepth)
     {
-        if (board.IsInCheckmate()) return currentDepth % 2 == 0 ? -maxPieceSum : maxPieceSum;
+        if (board.IsInCheckmate()) return currentDepth % 2 == 0 ? board.PlyCount - maxPieceSum : maxPieceSum - board.PlyCount;
         if (board.IsInsufficientMaterial() || board.IsRepeatedPosition() || board.FiftyMoveCounter == 50 || board.IsDraw()) return 0;
 
-        if (scoreMap.ContainsKey(board.ZobristKey))
+        Transposition transposition = transposTable[board.ZobristKey & k_TpMask];
+
+        if (transposition.zobristHash == board.ZobristKey /* && transposition.flag != INVALID && transposition.depth >= 0 */)
         {
-            return scoreMap[board.ZobristKey];
+            return transposition.evaluation;
         }
         if (currentDepth >= maxDepth)
         {
             int boardScore = (currentDepth % 2 == 0) ^ board.IsWhiteToMove ? -EvalMaterial(board) : EvalMaterial(board);
-            scoreMap.Add(board.ZobristKey, boardScore);
+            transposition.evaluation = boardScore;
             return boardScore;
         }
 
@@ -74,7 +80,6 @@ public class MyBot : IChessBot
         {
             board.MakeMove(move);
             int score = CalcRecursive(board, timer, maxDepth, currentDepth + 1);
-            int score = (int)(CalcRecursive(board, timer, maxDepth, currentDepth + 1) * 0.9 + boardScore);
             board.UndoMove(move);
             if (score > bestScore) bestScore = score;
             if (timer.MillisecondsElapsedThisTurn > maxMillisPerTurn) return bestScore;
@@ -90,7 +95,7 @@ public class MyBot : IChessBot
         foreach (Move move in moves)
         {
             Square kingSquare = board.GetKingSquare(!board.IsWhiteToMove);
-            int promotionValue = pieceValues[(int)move.CapturePieceType];
+            int promotionValue = pieceValues[(int)move.PromotionPieceType];
             int captureValue = pieceValues[(int)move.CapturePieceType];
             int lostPieceValue = HighestLostPiece(board, move);
             int progress = move.MovePieceType == PieceType.Pawn ? GetDistance(move.StartSquare, move.TargetSquare) : GetDistance(kingSquare, move.StartSquare) - GetDistance(kingSquare, move.TargetSquare);
@@ -118,4 +123,14 @@ public class MyBot : IChessBot
     {
         return Math.Abs(square1.File - square2.File) + Math.Abs(square1.Rank - square2.Rank);
     }
+
+    //14 bytes per entry, likely will align to 16 bytes due to padding (if it aligns to 32, recalculate max TP table size)
+    public struct Transposition
+    {
+        public ulong zobristHash;
+        public Move move;
+        public int evaluation;
+        public sbyte depth;
+        public byte flag;
+    };
 }
