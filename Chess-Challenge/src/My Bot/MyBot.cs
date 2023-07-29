@@ -1,4 +1,4 @@
-﻿#define LOG
+﻿//#define LOG
 using ChessChallenge.API;
 using System;
 using System.Linq;
@@ -27,18 +27,18 @@ public class MyBot : IChessBot
 
     public Move Think(Board board, Timer timer)
     {
-        max_time = timer.MillisecondsRemaining / 20;
+        max_time = timer.MillisecondsRemaining / 30;
         Transposition bestMove = transposTable[board.ZobristKey & k_TpMask];
         for (sbyte i = 1; i <= max_depth; i++)
         {
 #if LOG
-            cacheHits = 0;
+            evals = 0;
             nodes = 0;
 #endif
-            CalcRecursive(board, i, board.IsWhiteToMove ? 1 : -1);
+            CalcRecursive(board, timer, i, board.IsWhiteToMove ? 1 : -1);
             bestMove = transposTable[board.ZobristKey & k_TpMask];
 #if LOG
-            Console.WriteLine("Depth: {0,2} | Nodes: {1,10} | Time: {2,5} ms | Best {3} | Eval: {4}", i, nodes, timer.MillisecondsElapsedThisTurn, bestMove.move, bestMove.evaluation);
+            Console.WriteLine("Depth: {0,2} | Nodes: {1,10} | Evals: {2,10} | Time: {3,5} ms | Best {4} | Eval: {5}", i, nodes, evals, timer.MillisecondsElapsedThisTurn, bestMove.move, bestMove.evaluation);
 #endif
             if ((max_time - timer.MillisecondsElapsedThisTurn) < timer.MillisecondsElapsedThisTurn * Math.Pow(i+1, 3))
             {
@@ -48,7 +48,7 @@ public class MyBot : IChessBot
         return bestMove.move;
     }
 
-    int CalcRecursive(Board board, sbyte currentDepth, int side)
+    int CalcRecursive(Board board, Timer timer, sbyte currentDepth, int side)
     {
 #if LOG
         nodes++;
@@ -56,17 +56,12 @@ public class MyBot : IChessBot
 
         ref Transposition transposition = ref transposTable[board.ZobristKey & k_TpMask];
 
-        if (transposition.zobristHash == board.ZobristKey && transposition.flag != INVALID && transposition.depth >= currentDepth)
-        {
-#if LOG
-            cacheHits++;
-#endif
-            return transposition.evaluation;
-        }
+        if (transposition.zobristHash == board.ZobristKey && transposition.flag != INVALID && transposition.depth >= currentDepth) return transposition.evaluation;
+
 
         if (board.IsInCheckmate()) return int.MinValue + board.PlyCount;
         if (board.IsDraw()) return -10;
-        if (currentDepth <= 0) return EvalMaterial(board, side) * side;
+        if (currentDepth <= 0) return EvalMaterial(board, side);
 
         Move[] moves = board.GetLegalMoves();
         Move bestMove = moves[0];
@@ -74,12 +69,16 @@ public class MyBot : IChessBot
         foreach (Move move in moves.OrderByDescending(m => pieceValues[(int)m.MovePieceType]))
         {
             board.MakeMove(move);
-            int score = -CalcRecursive(board, (sbyte) (currentDepth - 1), -side);
+            int score = -CalcRecursive(board, timer, (sbyte) (currentDepth - 1), -side);
             board.UndoMove(move);
             if (score > bestScore)
             {
                 bestScore = score;
                 bestMove = move;
+            }
+            if (timer.MillisecondsElapsedThisTurn > max_time)
+            {
+                break;
             }
         }
 
@@ -93,10 +92,23 @@ public class MyBot : IChessBot
 
     int EvalMaterial(Board board, int side)
     {
+#if LOG
+        evals++;
+#endif
         //Square kingSquare = board.GetKingSquare(side == 1);
-        int repetition = board.IsRepeatedPosition() ? 100 : 0;
-        int materialValue = board.GetAllPieceLists().Chunk(6).Select(chunk => chunk.Sum(list => list.Sum(p => pieceValues[(int)p.PieceType]))).Aggregate((white, black) => white - black);
-        return materialValue - repetition;
+        float repetition = board.IsRepeatedPosition() ? 0.5f : 1;
+        int materialValue = board.GetAllPieceLists().Chunk(6).Select(chunk => chunk.Take(5).Sum(list => list.Sum(p => pieceValues[(int)p.PieceType]))).Aggregate((white, black) => white - black) * side;
+        return (int) (materialValue + Mobility(board, side) * repetition);
+    }
+
+    int Mobility(Board board, int side)
+    {
+        int mobility = board.GetPieceList(PieceType.Knight, side == 1).Sum(p => BitboardHelper.GetNumberOfSetBits(~(side == 1 ? board.WhitePiecesBitboard : board.BlackPiecesBitboard) & BitboardHelper.GetKnightAttacks(p.Square)));
+        for (int pieceType = 3; pieceType < 6; pieceType++)
+        {
+            mobility += board.GetPieceList((PieceType) pieceType, side == 1).Sum(p => BitboardHelper.GetNumberOfSetBits(BitboardHelper.GetSliderAttacks(p.PieceType, p.Square, board)));
+        }
+        return mobility;
     }
 
     /*
