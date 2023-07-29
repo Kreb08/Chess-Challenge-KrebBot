@@ -1,12 +1,17 @@
 ﻿//#define LOG
 using ChessChallenge.API;
 using System;
+using System.Drawing;
 using System.Linq;
 
+//Tier 1: -128 Elo  +/- 30 (430 Games)
 public class MyBot : IChessBot
 {
     // Piece values: null, pawn, knight, bishop, rook, queen, king
-    private int[] pieceValues = { 0, 100, 300, 330, 500, 900, 10000 };
+    private int[] pieceValues;
+    private int[] pieceValuesE = { 0, 100, 330, 300, 500, 900, 0 };
+    private int[] pieceValuesM = { 0, 150, 300, 330, 500, 900, 0 };
+    private int[] pieceValuesL = { 0, 400, 200, 330, 500, 900, 10000 };
 
     private const byte INVALID = 0, EXACT = 1, LOWERBOUND = 2, UPPERBOUND = 3;
     private const ulong k_TpMask = 0x7FFFFF; //4.7 million entries, likely consuming about 151 MB
@@ -27,6 +32,21 @@ public class MyBot : IChessBot
 
     public Move Think(Board board, Timer timer)
     {
+        
+        if (board.PlyCount < 20 && BitboardHelper.GetNumberOfSetBits(board.AllPiecesBitboard) > 20)
+        {
+            // EARLY
+            pieceValues = pieceValuesE;
+        }
+        else if (BitboardHelper.GetNumberOfSetBits(board.AllPiecesBitboard) > 10)
+        {
+            // MIDGAME
+            pieceValues = pieceValuesM;
+        } else
+        {
+            // LATE
+            pieceValues = pieceValuesL;
+        }
         max_time = timer.MillisecondsRemaining / 30;
         Transposition bestMove = transposTable[board.ZobristKey & k_TpMask];
         for (sbyte i = 1; i <= max_depth; i++)
@@ -76,10 +96,7 @@ public class MyBot : IChessBot
                 bestScore = score;
                 bestMove = move;
             }
-            if (timer.MillisecondsElapsedThisTurn > max_time)
-            {
-                break;
-            }
+            if (timer.MillisecondsElapsedThisTurn > max_time) break;
         }
 
         transposition.zobristHash = board.ZobristKey;
@@ -95,18 +112,18 @@ public class MyBot : IChessBot
 #if LOG
         evals++;
 #endif
-        //Square kingSquare = board.GetKingSquare(side == 1);
-        float repetition = board.IsRepeatedPosition() ? 0.5f : 1;
         int materialValue = board.GetAllPieceLists().Chunk(6).Select(chunk => chunk.Take(5).Sum(list => list.Sum(p => pieceValues[(int)p.PieceType]))).Aggregate((white, black) => white - black) * side;
-        return (int) (materialValue + Mobility(board, side) * repetition);
+        return materialValue + Mobility(board, side);
     }
 
     int Mobility(Board board, int side)
     {
-        int mobility = board.GetPieceList(PieceType.Knight, side == 1).Sum(p => BitboardHelper.GetNumberOfSetBits(~(side == 1 ? board.WhitePiecesBitboard : board.BlackPiecesBitboard) & BitboardHelper.GetKnightAttacks(p.Square)));
-        for (int pieceType = 3; pieceType < 6; pieceType++)
+        int mobility = 0;
+        // ignore pawns and king
+        for (int pieceType = 2; pieceType < 6; pieceType++)
         {
-            mobility += board.GetPieceList((PieceType) pieceType, side == 1).Sum(p => BitboardHelper.GetNumberOfSetBits(BitboardHelper.GetSliderAttacks(p.PieceType, p.Square, board)));
+            // get piecelist for relevant pieces, getAttackMoves, exclude own piece positions, sum of tiles
+            mobility += board.GetPieceList((PieceType) pieceType, side == 1).Sum(p => BitboardHelper.GetNumberOfSetBits(~(side == 1 ? board.WhitePiecesBitboard : board.BlackPiecesBitboard) & BitboardHelper.GetPieceAttacks(p.PieceType, p.Square, board, side == 1)));
         }
         return mobility;
     }
