@@ -280,7 +280,24 @@ namespace ChessChallenge.Application
 
                 if (log)
                 {
-                    Log("Game Over: " + result, false, ConsoleColor.Blue);
+                    String name;
+                    switch(result)
+                    {
+                        case GameResult.WhiteIsMated:
+                        case GameResult.WhiteTimeout:
+                        case GameResult.WhiteIllegalMove:
+                            name = GetPlayerName(PlayerWhite.PlayerType) + " lost";
+                            break;
+                        case GameResult.BlackIsMated:
+                        case GameResult.BlackTimeout:
+                        case GameResult.BlackIllegalMove:
+                            name = GetPlayerName(PlayerBlack.PlayerType) + " lost";
+                            break;
+                        default:
+                            name = "Draw";
+                            break;
+                    }
+                    Log("Game Over: " + result + " (" + name + ")", false, ConsoleColor.Blue);
                 }
 
                 string pgn = PGNCreator.CreatePGN(board, result, GetPlayerName(PlayerWhite), GetPlayerName(PlayerBlack));
