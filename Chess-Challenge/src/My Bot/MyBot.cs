@@ -4,6 +4,7 @@ using System;
 using System.Linq;
 
 //Tier 1: -8 Elo  +/-18 (1000 Games)
+// W: 327 D: 323 L: 350 Timeouts: 25
 public class MyBot : IChessBot
 {
 	// Piece values: null, pawn, knight, bishop, rook, queen, king
@@ -13,7 +14,7 @@ public class MyBot : IChessBot
 	private const ulong k_TpMask = 0x7FFFFF; //4.7 million entries, likely consuming about 151 MB
 	private Transposition[] transposTable; // ref  m_TPTable[zHash & k_TpMask]
 
-	const int max_depth = 9; // n + 1, max depth will be 1 smaller
+	const int max_depth = 10; // n + 1, max depth will be 1 smaller
 	int max_time;
 
 #if LOG
@@ -68,7 +69,7 @@ public class MyBot : IChessBot
 		if (board.IsInCheckmate())
 			return int.MinValue + board.PlyCount;
 		if (board.IsDraw())
-			return (int) (-EvalMaterial(board, side) * 0.2); // return negative score when material advantage
+			return (int) (-EvalMaterial(board, side) * 0.1); // return negative score when material advantage
 		if (currentDepth <= 0)
 			return EvalMaterial(board, side);
 
