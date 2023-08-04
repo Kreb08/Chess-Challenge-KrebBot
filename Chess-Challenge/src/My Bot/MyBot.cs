@@ -1,20 +1,19 @@
 ﻿//#define LOG
 using ChessChallenge.API;
 using System;
-using System.Linq;
 
 //Tier 1: -8 Elo  +/-18 (1000 Games)
 // W: 327 D: 323 L: 350 Timeouts: 25
 public class MyBot : IChessBot
 {
 	// Piece values: null, pawn, knight, bishop, rook, queen, king
-	private int[] pieceValues = { 0, 100, 300, 330, 500, 900, 0 };
-	private int[] pieceValuesL = { 0, 400, 200, 300, 700, 900, 10000 };
+	private int[] pieceValues = { 0, 100, 300, 330, 500, 900, 0 }, 
+		pieceValuesL = { 0, 300, 200, 330, 500, 900, 0 };
 
 	private const ulong k_TpMask = 0x7FFFFF; //4.7 million entries, likely consuming about 151 MB
 	private Transposition[] transposTable; // ref  m_TPTable[zHash & k_TpMask]
 
-	const int max_depth = 10; // n + 1, max depth will be 1 smaller
+	int max_depth = 11; // n + 1, max depth will be 1 smaller
 	int max_time;
 
 #if LOG
@@ -28,19 +27,24 @@ public class MyBot : IChessBot
 	}
 
 	public Move Think(Board board, Timer timer)
-	{
-		if (BitboardHelper.GetNumberOfSetBits(board.AllPiecesBitboard) < 11)
-			pieceValues = pieceValuesL; // change values for LateGame
+    {
+        // change values for LateGame
+        if (BitboardHelper.GetNumberOfSetBits(board.AllPiecesBitboard) < 11)
+            pieceValues = pieceValuesL;
 
-		max_time = timer.MillisecondsRemaining / 30;
+        max_time =  timer.MillisecondsRemaining / (int) (50 - Math.Log(board.PlyCount + 1));
 		Transposition bestMove = transposTable[board.ZobristKey & k_TpMask];
-		for (sbyte i = 1; i < max_depth;)
+
+		if (timer.MillisecondsRemaining < 500)
+			max_depth = 3;
+
+		for (sbyte i = 1; i < max_depth;i++)
 		{
 #if LOG
 			evals = 0;
 			nodes = 0;
 #endif
-			CalcRecursive(board, timer, i, board.IsWhiteToMove ? 1 : -1);
+			CalcRecursive(board, i, board.IsWhiteToMove ? 1 : -1, int.MinValue+1, int.MaxValue);
 			bestMove = transposTable[board.ZobristKey & k_TpMask];
 #if LOG
 			Console.WriteLine("Depth: {0,2} | Nodes: {1,10} | Evals: {2,10} | Time: {3,5} ms | Best {4} | Eval: {5}", i, nodes, evals, timer.MillisecondsElapsedThisTurn, bestMove.move, bestMove.evaluation);
@@ -49,49 +53,59 @@ public class MyBot : IChessBot
 				break; // early cheackmate escape
 
 			// time management
-			if ((max_time - timer.MillisecondsElapsedThisTurn) < timer.MillisecondsElapsedThisTurn * Math.Pow(i++, 3))
+			if (timer.MillisecondsElapsedThisTurn * 3 > max_time)
 				break;
 		}
+#if LOG
+		Console.WriteLine("EllapsedTime: {0,5} ms | MaxTime: {1,5} ms | TimeLeft: {2,5} ms", timer.MillisecondsElapsedThisTurn, max_time, timer.MillisecondsRemaining);
+#endif
 		return bestMove.move;
 	}
 
-	int CalcRecursive(Board board, Timer timer, sbyte currentDepth, int side)
+	int CalcRecursive(Board board, sbyte currentDepth, int side, int alpha, int beta)
 	{
 #if LOG
 		nodes++;
 #endif
-		// Cached values
-		ref Transposition transposition = ref transposTable[board.ZobristKey & k_TpMask];
-		if (transposition.zobristHash == board.ZobristKey && transposition.depth >= currentDepth)
+        if (board.IsDraw())
+            return (int)(-EvalMaterial(board, side) * 0.2); // return negative score when material advantage
+
+        // Cached values
+        ref Transposition transposition = ref transposTable[board.ZobristKey & k_TpMask];
+		if (transposition.zobristHash == board.ZobristKey && transposition.depth > currentDepth)
 			return transposition.evaluation;
 
-		// End cases
-		if (board.IsInCheckmate())
+        // End cases
+        if (board.IsInCheckmate())
 			return int.MinValue + board.PlyCount;
-		if (board.IsDraw())
-			return (int) (-EvalMaterial(board, side) * 0.1); // return negative score when material advantage
 		if (currentDepth <= 0)
 			return EvalMaterial(board, side);
 
 		// recursion
-		Move[] moves = board.GetLegalMoves();
+		Span<Move> moves = stackalloc Move[256];
+		board.GetLegalMovesNonAlloc(ref moves);
 		ReorderMoves(ref moves);
 		Move bestMove = moves[0];
 		int bestScore = int.MinValue;
 		foreach (Move move in moves)
 		{
 			board.MakeMove(move);
-			int score = -CalcRecursive(board, timer, (sbyte) (currentDepth - 1), -side);
+			int score = -CalcRecursive(board, (sbyte) (currentDepth - 1), -side, -beta, -alpha);
 			board.UndoMove(move);
-			if (score > bestScore)
+			if (score >= beta)
 			{
+				// Fail soft beta
 				bestScore = score;
 				bestMove = move;
-			}
-
-			// time management
-			if (timer.MillisecondsElapsedThisTurn > max_time)
 				break;
+			}
+			if (score > bestScore)
+            {
+				bestScore = score;
+                bestMove = move;
+                if (score > alpha)
+                    alpha = score;
+            }
 		}
 
 		// update cache with best move
@@ -102,10 +116,10 @@ public class MyBot : IChessBot
 		return bestScore;
 	}
 
-	void ReorderMoves(ref Move[] moves)
+	void ReorderMoves(ref Span<Move> moves)
 	{
-		moves.OrderByDescending(m => pieceValues[(int)m.MovePieceType]);
-    }
+		moves.Sort((m1, m2) => pieceValues[(int)m1.MovePieceType] - pieceValues[(int)m2.MovePieceType]);
+	}
 
 	// pieces of current player - pieces oppenent player + move options current player
 	int EvalMaterial(Board board, int side)
@@ -113,47 +127,31 @@ public class MyBot : IChessBot
 #if LOG
 		evals++;
 #endif
-		//bool isWhite = side == 1;
 		int eval = 0;
-		// all pieces except king
-		/*
-		for (byte pieceType = 0; ++pieceType < 6;)
-		{
-			PieceList myPieces = board.GetPieceList((PieceType)pieceType, isWhite);
-			eval += myPieces.Count * pieceValues[pieceType];
-			eval -= board.GetPieceList((PieceType)pieceType, !isWhite).Count * pieceValues[pieceType];
-
-			// calc mobility for all pieces except pawns
-			if (pieceType > 1)
-				// gets all possible moves for each piece and counts them
-				foreach (Piece piece in myPieces)
-					eval += BitboardHelper.GetNumberOfSetBits(~(isWhite ? board.WhitePiecesBitboard : board.BlackPiecesBitboard) & BitboardHelper.GetPieceAttacks(piece.PieceType, piece.Square, board, isWhite));
-		}
-		*/
 		foreach (PieceList pieceList in board.GetAllPieceLists())
 		{
-			if (pieceList.TypeOfPieceInList == PieceType.King)
-				continue;
 			int value = pieceList.Count * pieceValues[(int)pieceList.TypeOfPieceInList];
-            if (pieceList.IsWhitePieceList == (side == 1))
-            {
-                eval += value;
-                if (pieceList.TypeOfPieceInList != PieceType.Pawn)
+			if (pieceList.IsWhitePieceList == (side == 1))
+			{
+				eval += value;
+				if (pieceList.TypeOfPieceInList == PieceType.King)
+				{
+					//eval += BitboardHelper.GetNumberOfSetBits(board.GetPieceBitboard(PieceType.Pawn, pieceList.IsWhitePieceList) & BitboardHelper.GetPieceAttacks(PieceType.King, board.GetKingSquare(pieceList.IsWhitePieceList), board, pieceList.IsWhitePieceList));
+
+                }
+				else if (pieceList.TypeOfPieceInList != PieceType.Pawn)
+                {
                     foreach (Piece piece in pieceList)
-						eval += BitboardHelper.GetNumberOfSetBits(~(piece.IsWhite ? board.WhitePiecesBitboard : board.BlackPiecesBitboard) & BitboardHelper.GetPieceAttacks(piece.PieceType, piece.Square, board, piece.IsWhite));
-            }
+                    {
+                        eval += BitboardHelper.GetNumberOfSetBits(~(piece.IsWhite ? board.WhitePiecesBitboard : board.BlackPiecesBitboard) & BitboardHelper.GetPieceAttacks(piece.PieceType, piece.Square, board, piece.IsWhite)) / 2;
+                    }
+                }
+			}
 			else 
 				eval -= value;
-        }
+		}
 		return eval;
 	}
-
-	/*
-	int GetDistance(Square square1, Square square2)
-	{
-		return Math.Abs(square1.File - square2.File) + Math.Abs(square1.Rank - square2.Rank);
-	}
-	*/
 
 	//14 bytes per entry, likely will align to 16 bytes due to padding (if it aligns to 32, recalculate max TP table size)
 	public struct Transposition
