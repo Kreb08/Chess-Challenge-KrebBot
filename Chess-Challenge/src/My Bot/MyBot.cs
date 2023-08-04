@@ -2,8 +2,8 @@
 using ChessChallenge.API;
 using System;
 
-//Tier 1: -8 Elo  +/-18 (1000 Games)
-// W: 327 D: 323 L: 350 Timeouts: 25
+//Tier 1: +352 Elo  +/-38 (700 Games)
+// W: 600 D: 37 L: 63 Timeouts: 34
 public class MyBot : IChessBot
 {
 	// Piece values: null, pawn, knight, bishop, rook, queen, king
@@ -134,17 +134,10 @@ public class MyBot : IChessBot
 			if (pieceList.IsWhitePieceList == (side == 1))
 			{
 				eval += value;
-				if (pieceList.TypeOfPieceInList == PieceType.King)
-				{
-					//eval += BitboardHelper.GetNumberOfSetBits(board.GetPieceBitboard(PieceType.Pawn, pieceList.IsWhitePieceList) & BitboardHelper.GetPieceAttacks(PieceType.King, board.GetKingSquare(pieceList.IsWhitePieceList), board, pieceList.IsWhitePieceList));
-
-                }
-				else if (pieceList.TypeOfPieceInList != PieceType.Pawn)
+				if (pieceList.TypeOfPieceInList != PieceType.Pawn && pieceList.TypeOfPieceInList != PieceType.King)
                 {
                     foreach (Piece piece in pieceList)
-                    {
-                        eval += BitboardHelper.GetNumberOfSetBits(~(piece.IsWhite ? board.WhitePiecesBitboard : board.BlackPiecesBitboard) & BitboardHelper.GetPieceAttacks(piece.PieceType, piece.Square, board, piece.IsWhite)) / 2;
-                    }
+                        eval += BitboardHelper.GetNumberOfSetBits(~(piece.IsWhite ? board.WhitePiecesBitboard : board.BlackPiecesBitboard) & BitboardHelper.GetPieceAttacks(piece.PieceType, piece.Square, board, piece.IsWhite));
                 }
 			}
 			else 
