@@ -1,12 +1,9 @@
 ﻿//#define LOG
 using ChessChallenge.API;
 using System;
-using static MyBot;
 
-//Tier 1: +352 Elo  +/-38 (700 Games)
-// W: 600 D: 37 L: 63 Timeouts: 34 (10s)
-//Tier 1: ? Elo  +/-? (550 Games)
-// W: 492 D: 38 L: 19 Timeouts: 9 (20s)
+//Tier 1: +515 Elo  +/-59 (500 Games)
+// W: 460 D: 31 L: 9 Timeouts: 3 (20s)
 public class MyBot : IChessBot
 {
 	// Piece values: null, pawn, knight, bishop, rook, queen, king
@@ -19,6 +16,8 @@ public class MyBot : IChessBot
     private const ulong k_pTpMask = 0x3FFFFF;
     private readonly PawnTransposition[] pawnTranspositions; // ref  m_TPTable[zHash & k_pTpMask]
 
+	// ulong 1 is WHITE BOTTOM LEFT (A1), MAX VALUE is EVERY TILE (11111....)
+	// for each file check if there are frindly pawns in the left or right file
     private readonly ulong[] isolationTable = { 
 		0b01000000_01000000_01000000_01000000_01000000_01000000_01000000_01000000,
 		0b10100000_10100000_10100000_10100000_10100000_10100000_10100000_10100000,
@@ -27,7 +26,32 @@ public class MyBot : IChessBot
         0b00010100_00010100_00010100_00010100_00010100_00010100_00010100_00010100,
         0b00001010_00001010_00001010_00001010_00001010_00001010_00001010_00001010,
         0b00000101_00000101_00000101_00000101_00000101_00000101_00000101_00000101,
-        0b00000010_00000010_00000010_00000010_00000010_00000010_00000010_00000010 };
+        0b00000010_00000010_00000010_00000010_00000010_00000010_00000010_00000010
+	};
+
+	// shift by rank, flip for black
+    private readonly ulong[] passedPawnTableW = {
+		0b00000011_00000011_00000011_00000011_00000011_00000011_00000011_00000000,
+		0b00000111_00000111_00000111_00000111_00000111_00000111_00000111_00000000,
+		0b00001110_00001110_00001110_00001110_00001110_00001110_00001110_00000000,
+		0b00011100_00011100_00011100_00011100_00011100_00011100_00011100_00000000,
+		0b00111000_00111000_00111000_00111000_00111000_00111000_00111000_00000000,
+		0b01110000_01110000_01110000_01110000_01110000_01110000_01110000_00000000,
+		0b11100000_11100000_11100000_11100000_11100000_11100000_11100000_00000000,
+        0b11000000_11000000_11000000_11000000_11000000_11000000_11000000_00000000
+    };
+
+	// shift by rank
+    private readonly ulong[] passedPawnTableB = {
+		0b00000000_11000000_11000000_11000000_11000000_11000000_11000000_11000000,
+		0b00000000_11100000_11100000_11100000_11100000_11100000_11100000_11100000,
+		0b00000000_01110000_01110000_01110000_01110000_01110000_01110000_01110000,
+		0b00000000_00111000_00111000_00111000_00111000_00111000_00111000_00111000,
+		0b00000000_00011100_00011100_00011100_00011100_00011100_00011100_00011100,
+		0b00000000_00001110_00001110_00001110_00001110_00001110_00001110_00001110,
+		0b00000000_00000111_00000111_00000111_00000111_00000111_00000111_00000111,
+        0b00000000_00000011_00000011_00000011_00000011_00000011_00000011_00000011
+    };
 
     int max_depth = 11; // n + 1, max depth will be 1 smaller
 	int max_time;
@@ -176,17 +200,22 @@ public class MyBot : IChessBot
         pawnEvals++;
 #endif
         int score = 0;
-        PieceList pawns = board.GetPieceList(PieceType.Pawn, side == 1);
-		foreach (Piece piece in pawns)
-		{
-			if ((isolationTable[piece.Square.File] & pawnKey) == 0)
-			{
-				// isolated Pawn
-				score -= (int) (pieceValues[1] * 0.5);
-			}
-		}
+        ulong pawns = pawnKey;
+        while (BitboardHelper.GetNumberOfSetBits(pawns) > 0)
+        {
+			int index = BitboardHelper.ClearAndGetIndexOfLSB(ref pawns), 
+				file = index & 7, 
+				rank = index - file;
 
-		pawnTransposition.pawnKey = pawnKey;
+			if (side == 1 ?
+				((passedPawnTableW[file] << rank) & board.GetPieceBitboard(PieceType.Pawn, false)) == 0 :
+				((passedPawnTableB[file] >> (64 - rank)) & board.GetPieceBitboard(PieceType.Pawn, true)) == 0)
+				score += 60;// passed Pawn
+            else if ((isolationTable[file] & pawnKey) == 0)
+                score -= 20; // isolated Pawn
+        }
+
+        pawnTransposition.pawnKey = pawnKey;
 		pawnTransposition.side = (sbyte) side;
 		pawnTransposition.evaluation = score;
 		return score;
