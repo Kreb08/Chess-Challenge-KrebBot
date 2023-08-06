@@ -7,8 +7,7 @@ using System;
 public class MyBot : IChessBot
 {
 	// Piece values: null, pawn, knight, bishop, rook, queen, king
-	private int[] pieceValues = { 0, 100, 300, 330, 500, 900, 0 }, 
-		pieceValuesL = { 0, 300, 200, 330, 500, 900, 0 };
+	private int[] pieceValues = { 0, 100, 300, 330, 500, 900, 0 };
 
 	private const ulong k_TpMask = 0x7FFFFF; //4.7 million entries, likely consuming about 151 MB
 	private readonly Transposition[] transposTable; // ref  m_TPTable[zHash & k_TpMask]
@@ -70,10 +69,6 @@ public class MyBot : IChessBot
 
 	public Move Think(Board board, Timer timer)
     {
-        // change values for LateGame
-        if (BitboardHelper.GetNumberOfSetBits(board.AllPiecesBitboard) < 11)
-            pieceValues = pieceValuesL;
-
         max_time = timer.MillisecondsRemaining / (int) (50 - Math.Log(board.PlyCount + 1));
 		Transposition bestMove = transposTable[board.ZobristKey & k_TpMask];
 
@@ -191,16 +186,17 @@ public class MyBot : IChessBot
 
 	int EvalPawns(Board board, int side)
     {
-		ulong pawnKey = board.GetPieceBitboard(PieceType.Pawn, side == 1);
-        ref PawnTransposition pawnTransposition = ref pawnTranspositions[pawnKey & k_pTpMask];
-        if (pawnTransposition.pawnKey == pawnKey && pawnTransposition.side == side)
+		ulong myPawns = board.GetPieceBitboard(PieceType.Pawn, side == 1);
+		ulong enemyPawns = board.GetPieceBitboard(PieceType.Pawn, side != 1);
+        ref PawnTransposition pawnTransposition = ref pawnTranspositions[myPawns & k_pTpMask];
+        if (pawnTransposition.pawnKey == myPawns && pawnTransposition.side == side)
             return pawnTransposition.evaluation;
 
 #if LOG
         pawnEvals++;
 #endif
         int score = 0;
-        ulong pawns = pawnKey;
+        ulong pawns = myPawns;
         while (BitboardHelper.GetNumberOfSetBits(pawns) > 0)
         {
 			int index = BitboardHelper.ClearAndGetIndexOfLSB(ref pawns), 
@@ -208,14 +204,14 @@ public class MyBot : IChessBot
 				rank = index - file;
 
 			if (side == 1 ?
-				((passedPawnTableW[file] << rank) & board.GetPieceBitboard(PieceType.Pawn, false)) == 0 :
-				((passedPawnTableB[file] >> (64 - rank)) & board.GetPieceBitboard(PieceType.Pawn, true)) == 0)
+				(passedPawnTableW[file] << rank & enemyPawns) == 0 :
+				(passedPawnTableB[file] >> 64 - rank & enemyPawns) == 0)
 				score += 60;// passed Pawn
-            else if ((isolationTable[file] & pawnKey) == 0)
+            else if ((isolationTable[file] & myPawns) == 0)
                 score -= 20; // isolated Pawn
         }
 
-        pawnTransposition.pawnKey = pawnKey;
+        pawnTransposition.pawnKey = myPawns;
 		pawnTransposition.side = (sbyte) side;
 		pawnTransposition.evaluation = score;
 		return score;
