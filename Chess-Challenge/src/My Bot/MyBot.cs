@@ -1,6 +1,8 @@
 ﻿//#define LOG
 using ChessChallenge.API;
 using System;
+using System.Buffers.Binary;
+using System.Reflection;
 
 //Tier 1: +515 Elo  +/-59 (500 Games)
 // W: 460 D: 31 L: 9 Timeouts: 3 (20s)
@@ -38,18 +40,6 @@ public class MyBot : IChessBot
 		0b01110000_01110000_01110000_01110000_01110000_01110000_01110000_00000000,
 		0b11100000_11100000_11100000_11100000_11100000_11100000_11100000_00000000,
         0b11000000_11000000_11000000_11000000_11000000_11000000_11000000_00000000
-    };
-
-	// shift by rank
-    private readonly ulong[] passedPawnTableB = {
-		0b00000000_11000000_11000000_11000000_11000000_11000000_11000000_11000000,
-		0b00000000_11100000_11100000_11100000_11100000_11100000_11100000_11100000,
-		0b00000000_01110000_01110000_01110000_01110000_01110000_01110000_01110000,
-		0b00000000_00111000_00111000_00111000_00111000_00111000_00111000_00111000,
-		0b00000000_00011100_00011100_00011100_00011100_00011100_00011100_00011100,
-		0b00000000_00001110_00001110_00001110_00001110_00001110_00001110_00001110,
-		0b00000000_00000111_00000111_00000111_00000111_00000111_00000111_00000111,
-        0b00000000_00000011_00000011_00000011_00000011_00000011_00000011_00000011
     };
 
     int max_depth = 11; // n + 1, max depth will be 1 smaller
@@ -94,13 +84,15 @@ public class MyBot : IChessBot
 			if (timer.MillisecondsElapsedThisTurn * 4 > max_time)
 				break;
 		}
+
 #if LOG
 		Console.WriteLine("EllapsedTime: {0,5} ms | MaxTime: {1,5} ms | TimeLeft: {2,5} ms", timer.MillisecondsElapsedThisTurn, max_time, timer.MillisecondsRemaining);
 #endif
+		
 		return bestMove.move;
 	}
 
-	int CalcRecursive(Board board, sbyte currentDepth, int side, int alpha, int beta)
+    int CalcRecursive(Board board, sbyte currentDepth, int side, int alpha, int beta)
 	{
 #if LOG
 		nodes++;
@@ -189,7 +181,7 @@ public class MyBot : IChessBot
 				eval += value;
 				if (pieceList.TypeOfPieceInList != PieceType.Pawn && pieceList.TypeOfPieceInList != PieceType.King)
                 {
-                    foreach (Piece piece in pieceList)
+					foreach (Piece piece in pieceList)
                         eval += BitboardHelper.GetNumberOfSetBits(~(piece.IsWhite ? board.WhitePiecesBitboard : board.BlackPiecesBitboard) & BitboardHelper.GetPieceAttacks(piece.PieceType, piece.Square, board, piece.IsWhite));
                 }
 			}
@@ -214,16 +206,13 @@ public class MyBot : IChessBot
         ulong pawns = myPawns;
         while (BitboardHelper.GetNumberOfSetBits(pawns) > 0)
         {
-			int index = BitboardHelper.ClearAndGetIndexOfLSB(ref pawns), 
-				file = index & 7, 
-				rank = index - file;
+			int index = BitboardHelper.ClearAndGetIndexOfLSB(ref pawns),
+				file = index & 7;
 
-			if (side == 1 ?
-				(passedPawnTableW[file] << rank & enemyPawns) == 0 :
-				(passedPawnTableB[file] >> 64 - rank & enemyPawns) == 0)
-				score += 60;// passed Pawn
+			if ((side == 1 ? passedPawnTableW[file] << (index & 56) : BinaryPrimitives.ReverseEndianness(passedPawnTableW[file] << ((index ^ 56) & 56)) & enemyPawns) == 0)
+				score += 51;// passed Pawn
             else if ((isolationTable[file] & myPawns) == 0)
-                score -= 20; // isolated Pawn
+                score -= 10; // isolated Pawn
         }
 
         pawnTransposition.pawnKey = myPawns;
