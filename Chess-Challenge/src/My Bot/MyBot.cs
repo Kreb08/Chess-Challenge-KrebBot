@@ -12,7 +12,7 @@ public class MyBot : IChessBot
 	private const ulong k_TpMask = 0x7FFFFF; //4.7 million entries, likely consuming about 151 MB
 	private readonly Transposition[] transposTable; // ref  m_TPTable[zHash & k_TpMask]
 
-    private const ulong k_pTpMask = 0x3FFFFF;
+    private const ulong k_pTpMask = 0xFFFFF; // 20 bits, 1048575 entries
     private readonly PawnTransposition[] pawnTranspositions; // ref  m_TPTable[zHash & k_pTpMask]
 
 	// ulong 1 is WHITE BOTTOM LEFT (A1), MAX VALUE is EVERY TILE (11111....)
@@ -73,7 +73,7 @@ public class MyBot : IChessBot
 		Transposition bestMove = transposTable[board.ZobristKey & k_TpMask];
 
 		if (timer.MillisecondsRemaining < 1000)
-			max_depth = 3;
+			max_depth = 4;
 
 		for (sbyte i = 1; i < max_depth;i++)
 		{
@@ -109,25 +109,46 @@ public class MyBot : IChessBot
         if (board.IsInCheckmate())
             return int.MinValue + board.PlyCount;
         if (board.IsDraw())
-            return (int)(-EvalMaterial(board, side) * 0.2); // return negative score when material advantage
+            return 0;
 
         // Cached values
         ref Transposition transposition = ref transposTable[board.ZobristKey & k_TpMask];
-		if (transposition.zobristHash == board.ZobristKey && transposition.depth > currentDepth)
+		if (transposition.zobristHash == board.ZobristKey && transposition.depth >= currentDepth)
 			return transposition.evaluation;
 
 		if (currentDepth <= 0)
 			return EvalMaterial(board, side);
 
-		// recursion
 		Span<Move> moves = stackalloc Move[256];
 		board.GetLegalMovesNonAlloc(ref moves);
-		ReorderMoves(ref moves);
+        int[] scores = new int[moves.Length];
+
+        // Score moves
+        for (int i = 0; i < moves.Length; i++)
+        {
+            Move move = moves[i];
+            // TT move
+            if (move == transposition.move) 
+				scores[i] = 1000000;
+            // https://www.chessprogramming.org/MVV-LVA
+            else if (move.IsCapture)
+				scores[i] = 100 * (int)move.CapturePieceType - (int)move.MovePieceType;
+        }
+
+
 		Move bestMove = moves[0];
 		int bestScore = int.MinValue;
-		foreach (Move move in moves)
-		{
-			board.MakeMove(move);
+        for (int i = 0; i < moves.Length; i++)
+        {
+            // Incrementally sort moves
+            for (int j = i + 1; j < moves.Length; j++)
+            {
+                if (scores[j] > scores[i])
+                    (scores[i], scores[j], moves[i], moves[j]) = (scores[j], scores[i], moves[j], moves[i]);
+            }
+
+			Move move = moves[i];
+            board.MakeMove(move);
 			int score = -CalcRecursive(board, (sbyte) (currentDepth - 1), -side, -beta, -alpha);
 			board.UndoMove(move);
 			if (score >= beta)
@@ -141,8 +162,7 @@ public class MyBot : IChessBot
             {
 				bestScore = score;
                 bestMove = move;
-                if (score > alpha)
-                    alpha = score;
+				alpha = Math.Max(alpha, score);
             }
 		}
 
@@ -152,11 +172,6 @@ public class MyBot : IChessBot
 		transposition.evaluation = bestScore;
 		transposition.depth = currentDepth;
 		return bestScore;
-	}
-
-	void ReorderMoves(ref Span<Move> moves)
-	{
-		moves.Sort((m1, m2) => pieceValues[(int)m1.MovePieceType] - pieceValues[(int)m2.MovePieceType] + (m1.IsCapture ? 10 : 0));
 	}
 
 	// pieces of current player - pieces oppenent player + move options current player
@@ -224,6 +239,7 @@ public class MyBot : IChessBot
 		public Move move;
 		public int evaluation;
 		public sbyte depth;
+		public sbyte bound;
 	};
 
 	public struct PawnTransposition
