@@ -3,8 +3,8 @@ using ChessChallenge.API;
 using System;
 using System.Linq;
 
-//Tier 1: +515 Elo  +/-59 (500 Games)
-// W: 460 D: 31 L: 9 Timeouts: 3 (20s)
+//Tier 1: +601 Elo  +/-57 (1000 Games)
+// W: 956 D: 27 L: 17 Timeouts: 14 (20s)
 public class MyBot : IChessBot
 {
 	// Piece values: null, pawn, knight, bishop, rook, queen, king
