@@ -32,7 +32,6 @@ public class MyBot : IChessBot
     };
 
     int max_depth = 11; // n + 1, max depth will be 1 smaller
-	int max_time;
 
 #if LOG
 	int evals = 0;
@@ -48,7 +47,6 @@ public class MyBot : IChessBot
 
 	public Move Think(Board board, Timer timer)
     {
-        max_time = timer.MillisecondsRemaining / (int) (50 - Math.Log(board.PlyCount + 1));
 		Transposition bestMove = transposTable[board.ZobristKey & k_TpMask];
 
 		if (timer.MillisecondsRemaining < 1000)
@@ -70,7 +68,7 @@ public class MyBot : IChessBot
 				break; // early cheackmate escape
 
 			// time management
-			if (timer.MillisecondsElapsedThisTurn * 4 > max_time)
+			if (timer.MillisecondsElapsedThisTurn * 4 > timer.MillisecondsRemaining / 30)
 				break;
 		}
 
@@ -91,15 +89,19 @@ public class MyBot : IChessBot
         if (board.IsDraw())
             return 0;
 
-        // Cached values
         ref Transposition transposition = ref transposTable[board.ZobristKey & k_TpMask];
-		if (transposition.zobristHash == board.ZobristKey && transposition.depth >= currentDepth)
-			return transposition.evaluation;
 
-		if (currentDepth <= 0)
-			return EvalMaterial(board, side);
+        // TT cutoffs
+        if (transposition.zobristHash == board.ZobristKey && transposition.depth >= currentDepth && (
+			transposition.bound == 3 // exact score
+            || transposition.bound == 2 && transposition.evaluation >= beta // lower bound, fail high
+            || transposition.bound == 1 && transposition.evaluation <= alpha // upper bound, fail low
+        )) return transposition.evaluation;
 
-		Span<Move> moves = stackalloc Move[256];
+        if (currentDepth <= 0)
+            return EvalMaterial(board, side);
+
+        Span<Move> moves = stackalloc Move[256];
 		board.GetLegalMovesNonAlloc(ref moves);
         int[] scores = new int[moves.Length];
 
@@ -117,7 +119,8 @@ public class MyBot : IChessBot
 
 
 		Move bestMove = moves[0];
-		int bestScore = int.MinValue;
+        int origAlpha = alpha;
+        int bestScore = int.MinValue;
         for (int i = 0; i < moves.Length; i++)
         {
             // Incrementally sort moves
@@ -146,11 +149,15 @@ public class MyBot : IChessBot
             }
 		}
 
-		// update cache with best move
-		transposition.zobristHash = board.ZobristKey;
+        // Did we fail high/low or get an exact score?
+        int bound = bestScore >= beta ? 3 : bestScore > origAlpha ? 2 : 1;
+
+        // update cache with best move
+        transposition.zobristHash = board.ZobristKey;
 		transposition.move = bestMove;
 		transposition.evaluation = bestScore;
 		transposition.depth = currentDepth;
+		transposition.bound = (sbyte) bound;
 		return bestScore;
 	}
 
@@ -216,7 +223,7 @@ public class MyBot : IChessBot
 		public Move move;
 		public int evaluation;
 		public sbyte depth;
-		public sbyte bound;
+		public sbyte bound; // 1 = Lower Bound, 2 = Upper Bound, 3 = Exact
 	};
 
 	public struct PawnTransposition
