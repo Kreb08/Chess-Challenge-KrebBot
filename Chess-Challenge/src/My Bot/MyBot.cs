@@ -1,8 +1,7 @@
 ﻿//#define LOG
 using ChessChallenge.API;
 using System;
-using System.Buffers.Binary;
-using System.Reflection;
+using System.Linq;
 
 //Tier 1: +515 Elo  +/-59 (500 Games)
 // W: 460 D: 31 L: 9 Timeouts: 3 (20s)
@@ -18,28 +17,18 @@ public class MyBot : IChessBot
     private readonly PawnTransposition[] pawnTranspositions; // ref  m_TPTable[zHash & k_pTpMask]
 
 	// ulong 1 is WHITE BOTTOM LEFT (A1), MAX VALUE is EVERY TILE (11111....)
-	// for each file check if there are frindly pawns in the left or right file
-    private readonly ulong[] isolationTable = { 
-		0b01000000_01000000_01000000_01000000_01000000_01000000_01000000_01000000,
-		0b10100000_10100000_10100000_10100000_10100000_10100000_10100000_10100000,
-		0b01010000_01010000_01010000_01010000_01010000_01010000_01010000_01010000,
-        0b00101000_00101000_00101000_00101000_00101000_00101000_00101000_00101000,
-        0b00010100_00010100_00010100_00010100_00010100_00010100_00010100_00010100,
-        0b00001010_00001010_00001010_00001010_00001010_00001010_00001010_00001010,
-        0b00000101_00000101_00000101_00000101_00000101_00000101_00000101_00000101,
-        0b00000010_00000010_00000010_00000010_00000010_00000010_00000010_00000010
-	};
 
 	// shift by rank, flip for black
+	// this is also an isolation table when masking the 'file' (middle coloumn) ..111.. => ..101..
     private readonly ulong[] passedPawnTableW = {
-		0b00000011_00000011_00000011_00000011_00000011_00000011_00000011_00000000,
-		0b00000111_00000111_00000111_00000111_00000111_00000111_00000111_00000000,
-		0b00001110_00001110_00001110_00001110_00001110_00001110_00001110_00000000,
-		0b00011100_00011100_00011100_00011100_00011100_00011100_00011100_00000000,
-		0b00111000_00111000_00111000_00111000_00111000_00111000_00111000_00000000,
-		0b01110000_01110000_01110000_01110000_01110000_01110000_01110000_00000000,
-		0b11100000_11100000_11100000_11100000_11100000_11100000_11100000_00000000,
-        0b11000000_11000000_11000000_11000000_11000000_11000000_11000000_00000000
+		0b00000000_00000011_00000011_00000011_00000011_00000011_00000011_00000000,
+		0b00000000_00000111_00000111_00000111_00000111_00000111_00000111_00000000,
+		0b00000000_00001110_00001110_00001110_00001110_00001110_00001110_00000000,
+		0b00000000_00011100_00011100_00011100_00011100_00011100_00011100_00000000,
+		0b00000000_00111000_00111000_00111000_00111000_00111000_00111000_00000000,
+		0b00000000_01110000_01110000_01110000_01110000_01110000_01110000_00000000,
+		0b00000000_11100000_11100000_11100000_11100000_11100000_11100000_00000000,
+        0b00000000_11000000_11000000_11000000_11000000_11000000_11000000_00000000
     };
 
     int max_depth = 11; // n + 1, max depth will be 1 smaller
@@ -88,7 +77,6 @@ public class MyBot : IChessBot
 #if LOG
 		Console.WriteLine("EllapsedTime: {0,5} ms | MaxTime: {1,5} ms | TimeLeft: {2,5} ms", timer.MillisecondsElapsedThisTurn, max_time, timer.MillisecondsRemaining);
 #endif
-		
 		return bestMove.move;
 	}
 
@@ -209,12 +197,12 @@ public class MyBot : IChessBot
 			int index = BitboardHelper.ClearAndGetIndexOfLSB(ref pawns),
 				file = index & 7;
 
-			if ((side == 1 ? passedPawnTableW[file] << (index & 56) : BinaryPrimitives.ReverseEndianness(passedPawnTableW[file] << ((index ^ 56) & 56)) & enemyPawns) == 0)
+			if ((side == 1 ? passedPawnTableW[file] << (index & 56) : BitConverter.ToUInt64(BitConverter.GetBytes(passedPawnTableW[file] << ((index ^ 56) & 56)).Take(8).Reverse().ToArray(), 0) & enemyPawns) == 0)
 				score += 51;// passed Pawn
-            else if ((isolationTable[file] & myPawns) == 0)
+            else if (((passedPawnTableW[file] ^ 282578800148736u << file) & myPawns) == 0)
                 score -= 10; // isolated Pawn
         }
-
+		
         pawnTransposition.pawnKey = myPawns;
 		pawnTransposition.side = (sbyte) side;
 		pawnTransposition.evaluation = score;
