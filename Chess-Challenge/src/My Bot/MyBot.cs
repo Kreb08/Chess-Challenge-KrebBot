@@ -7,12 +7,11 @@ using System.Linq;
 // W: 956 D: 27 L: 17 Timeouts: 14 (20s)
 public class MyBot : IChessBot
 {
-	// Piece values: null, pawn, knight, bishop, rook, queen, king
-	private int[] pieceValues = { 0, 100, 300, 330, 500, 900, 0 };
+    private int[] piecePhase = { 0, 0, 1, 1, 2, 4, 0 };
 
-	//										  p    k    b    r    q   k
-    private readonly short[] PieceValues = { 100, 300, 330, 500, 900, 0, // Middlegame
-                                             200, 180, 300, 520, 900, 0}; // Endgame
+    //										  p    k    b    r    q   k
+    private readonly short[] PieceValues = { 82, 337, 365, 447, 1025, 0, // Midgame
+                                             94, 281, 297, 512, 936, 0}; // Endgame
 
     // Big table packed with data from premade piece square tables
     // Unpack using PackedEvaluationTables[set, rank] = file
@@ -26,43 +25,25 @@ public class MyBot : IChessBot
             73949978050619586491881614568m, 77043619187199676893167803647m, 1212557245150259869494540530m, 3081561358716686153294085872m, 3392217589357453836837847030m, 1219782446916489227407330320m, 78580145051212187267589731866m, 75798434925965430405537592305m,
             68369566912511282590874449920m, 72396532057599326246617936384m, 75186737388538008131054524416m, 77027917484951889231108827392m, 73655004947793353634062267392m, 76417372019396591550492896512m, 74568981255592060493492515584m, 70529879645288096380279255040m,
         };
+    // pesto[64][12] 64 squares with values flipped for white, 12 piecetypes (first 6 mg, last 6 eg) pawn_mg, knight_mg, ..., queen_eg, king_eg
     private readonly int[][] unpackedPestoTables;
 
     private const ulong k_TpMask = 0x7FFFFF; //4.7 million entries, likely consuming about 151 MB
 	private readonly Transposition[] transposTable; // ref  m_TPTable[zHash & k_TpMask]
 
-    private const ulong k_pTpMask = 0xFFFFF; // 20 bits, 1048575 entries
-    private readonly PawnTransposition[] pawnTranspositions; // ref  m_TPTable[zHash & k_pTpMask]
-
 	// ulong 1 is WHITE BOTTOM LEFT (A1), MAX VALUE is EVERY TILE (11111....)
 
-	// shift by rank, flip for black
-	// this is also an isolation table when masking the 'file' (middle coloumn) ..111.. => ..101..
-    private readonly ulong[] passedPawnTableW = {
-		0b00000000_00000011_00000011_00000011_00000011_00000011_00000011_00000000,
-		0b00000000_00000111_00000111_00000111_00000111_00000111_00000111_00000000,
-		0b00000000_00001110_00001110_00001110_00001110_00001110_00001110_00000000,
-		0b00000000_00011100_00011100_00011100_00011100_00011100_00011100_00000000,
-		0b00000000_00111000_00111000_00111000_00111000_00111000_00111000_00000000,
-		0b00000000_01110000_01110000_01110000_01110000_01110000_01110000_00000000,
-		0b00000000_11100000_11100000_11100000_11100000_11100000_11100000_00000000,
-        0b00000000_11000000_11000000_11000000_11000000_11000000_11000000_00000000
-    };
-
-    int max_depth = 11; // n + 1, max depth will be 1 smaller
+    int max_depth = 30; // n + 1, max depth will be 1 smaller
 
 #if LOG
 	int evals = 0;
 	int nodes = 0;
-	int pawnEvals = 0;
 #endif
 
 	public MyBot()
 	{
 		transposTable = new Transposition[k_TpMask + 1];
-        pawnTranspositions = new PawnTransposition[k_pTpMask + 1];
 
-        unpackedPestoTables = new int[64][];
         unpackedPestoTables = PackedPestoTables.Select(packedTable =>
         {
             int pieceType = 0;
@@ -85,18 +66,15 @@ public class MyBot : IChessBot
 #if LOG
 			evals = 0;
 			nodes = 0;
-            pawnEvals = 0;
 #endif
 			CalcRecursive(board, i, board.IsWhiteToMove ? 1 : -1, int.MinValue+1, int.MaxValue);
 			bestMove = transposTable[board.ZobristKey & k_TpMask];
 #if LOG
 			Console.WriteLine("Depth: {0,2} | Nodes: {1,8} | Evals: {2,8} | Pawns: {3,4} | Time: {4,5} ms | Best {5} | Eval: {6}", i, nodes, evals, pawnEvals, timer.MillisecondsElapsedThisTurn, bestMove.move, bestMove.evaluation);
 #endif
-			if (bestMove.evaluation + board.PlyCount - 1 == int.MaxValue - i)
-				break; // early cheackmate escape
 
 			// time management
-			if (timer.MillisecondsElapsedThisTurn * 4 > timer.MillisecondsRemaining / 30)
+			if (timer.MillisecondsElapsedThisTurn * 3 > timer.MillisecondsRemaining / 30)
 				break;
 		}
 
@@ -111,11 +89,6 @@ public class MyBot : IChessBot
 #if LOG
 		nodes++;
 #endif
-        // End cases
-        if (board.IsInCheckmate())
-            return int.MinValue + board.PlyCount;
-        if (board.IsDraw())
-            return 0;
 
         ref Transposition transposition = ref transposTable[board.ZobristKey & k_TpMask];
 
@@ -126,11 +99,20 @@ public class MyBot : IChessBot
             || transposition.bound == 1 && transposition.evaluation <= alpha // upper bound, fail low
         )) return transposition.evaluation;
 
-        if (currentDepth <= 0)
-            return EvalMaterial(board, side);
+        bool qsearch = currentDepth <= 0;
+        int eval = EvalMaterial(board, side);
+        int bestScore = int.MinValue;
+
+        // Quiescence search is in the same function as negamax to save tokens
+        if (qsearch)
+        {
+            bestScore = eval;
+            if (bestScore >= beta) return bestScore;
+            alpha = Math.Max(alpha, bestScore);
+        }
 
         Span<Move> moves = stackalloc Move[256];
-		board.GetLegalMovesNonAlloc(ref moves);
+		board.GetLegalMovesNonAlloc(ref moves, qsearch);
         int[] scores = new int[moves.Length];
 
         // Score moves
@@ -146,9 +128,8 @@ public class MyBot : IChessBot
         }
 
 
-		Move bestMove = moves[0];
+		Move bestMove = Move.NullMove;
         int origAlpha = alpha;
-        int bestScore = int.MinValue;
         for (int i = 0; i < moves.Length; i++)
         {
             // Incrementally sort moves
@@ -175,7 +156,10 @@ public class MyBot : IChessBot
                 bestMove = move;
 				alpha = Math.Max(alpha, score);
             }
-		}
+        }
+
+        // End cases
+        if (!qsearch && moves.Length == 0) return board.IsInCheck() ? -30000 + board.PlyCount : 0;
 
         // Did we fail high/low or get an exact score?
         int bound = bestScore >= beta ? 3 : bestScore > origAlpha ? 2 : 1;
@@ -195,47 +179,34 @@ public class MyBot : IChessBot
 #if LOG
 		evals++;
 #endif
-        int eval = EvalPawns(board, side);
-		foreach (PieceList pieceList in board.GetAllPieceLists())
-		{
-			int value = 0;
-			foreach (Piece piece in pieceList)
-                value += unpackedPestoTables[piece.Square.Index][(int)pieceList.TypeOfPieceInList - 1];
+		int mg = 0, // midgame Values
+            eg = 0, // endgame Values
+            phase = 0; // progress to endgame
 
-			eval += pieceList.IsWhitePieceList == (side == 1) ? value : -value;
-		}
-		return eval;
-	}
-
-	int EvalPawns(Board board, int side)
-    {
-		ulong myPawns = board.GetPieceBitboard(PieceType.Pawn, side == 1);
-		ulong enemyPawns = board.GetPieceBitboard(PieceType.Pawn, side != 1);
-        ref PawnTransposition pawnTransposition = ref pawnTranspositions[myPawns & k_pTpMask];
-        if (pawnTransposition.pawnKey == myPawns && pawnTransposition.side == side)
-            return pawnTransposition.evaluation;
-
-#if LOG
-        pawnEvals++;
-#endif
-        int score = 0;
-        ulong pawns = myPawns;
-        while (BitboardHelper.GetNumberOfSetBits(pawns) > 0)
+        // sum up values, according to white side
+        foreach (bool stm in new[] { true, false })
         {
-			int index = BitboardHelper.ClearAndGetIndexOfLSB(ref pawns),
-				file = index & 7;
-
-			if ((side == 1 ? passedPawnTableW[file] << (index & 56) : BitConverter.ToUInt64(BitConverter.GetBytes(passedPawnTableW[file] << ((index ^ 56) & 56)).Take(8).Reverse().ToArray(), 0) & enemyPawns) == 0)
-				score += 51;// passed Pawn
-            else if (((passedPawnTableW[file] ^ 282578800148736u << file) & myPawns) == 0)
-                score -= 10; // isolated Pawn
+            for (PieceType p = PieceType.Pawn; p <= PieceType.King; p++)
+            {
+                int pieceType = (int) p;
+                ulong pieces = board.GetPieceBitboard(p, stm);
+                while (pieces > 0)
+                {
+                    phase += piecePhase[pieceType];
+                    int pieceIndex = BitboardHelper.ClearAndGetIndexOfLSB(ref pieces) ^ (stm ? 56 : 0); // flip for white (tables are for black side)
+                    mg += unpackedPestoTables[pieceIndex][pieceType - 1];
+                    eg += unpackedPestoTables[pieceIndex][pieceType + 5];
+                }
+            }
+            // sum up white values, negate, sum up black values, negate again
+            // essentialy: white - black
+            mg = -mg;
+            eg = -eg;
         }
-		
-        pawnTransposition.pawnKey = myPawns;
-		pawnTransposition.side = (sbyte) side;
-		pawnTransposition.evaluation = score;
-		return score;
-    }
+        phase = Math.Min(phase, 24);
+        // combine scores and flip score depending on side
+        return (mg * phase + eg * (24 - phase)) / 24 * side;
+	}
 
     //14 bytes per entry, likely will align to 16 bytes due to padding (if it aligns to 32, recalculate max TP table size)
 	public struct Transposition
@@ -245,12 +216,5 @@ public class MyBot : IChessBot
 		public int evaluation;
 		public sbyte depth;
 		public sbyte bound; // 1 = Lower Bound, 2 = Upper Bound, 3 = Exact
-	};
-
-	public struct PawnTransposition
-	{
-		public ulong pawnKey;
-		public int evaluation;
-		public sbyte side;
 	};
 }

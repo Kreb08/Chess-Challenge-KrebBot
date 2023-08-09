@@ -1,6 +1,6 @@
 ﻿//#define EVIL
-#define TIER1
-//#define TIER2
+//#define TIER1
+#define TIER2
 
 using ChessChallenge.API;
 using System;
