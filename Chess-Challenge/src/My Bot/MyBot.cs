@@ -1,10 +1,7 @@
-﻿//#define LOG
-using ChessChallenge.API;
+﻿using ChessChallenge.API;
 using System;
 using System.Linq;
 
-//Tier 1: +601 Elo  +/-57 (1000 Games)
-// W: 956 D: 27 L: 17 Timeouts: 14 (20s)
 public class MyBot : IChessBot
 {
     private int[] piecePhase = { 0, 0, 1, 1, 2, 4, 0 };
@@ -33,12 +30,8 @@ public class MyBot : IChessBot
 
 	// ulong 1 is WHITE BOTTOM LEFT (A1), MAX VALUE is EVERY TILE (11111....)
 
-    int max_depth = 30; // n + 1, max depth will be 1 smaller
-
-#if LOG
-	int evals = 0;
-	int nodes = 0;
-#endif
+    int max_depth = 50; // n + 1, max depth will be 1 smaller
+    Timer timer;
 
 	public MyBot()
 	{
@@ -57,38 +50,45 @@ public class MyBot : IChessBot
 	public Move Think(Board board, Timer timer)
     {
 		Transposition bestMove = transposTable[board.ZobristKey & k_TpMask];
+        this.timer = timer;
 
 		if (timer.MillisecondsRemaining < 1000)
 			max_depth = 4;
 
-		for (sbyte i = 1; i < max_depth;i++)
+        int beta = int.MaxValue, 
+            alpha = -beta, 
+            depth = 1;
+        while (depth < max_depth)
 		{
-#if LOG
-			evals = 0;
-			nodes = 0;
-#endif
-			CalcRecursive(board, i, board.IsWhiteToMove ? 1 : -1, int.MinValue+1, int.MaxValue);
+			int score = CalcRecursive(board, depth, board.IsWhiteToMove ? 1 : -1, alpha, beta);
 			bestMove = transposTable[board.ZobristKey & k_TpMask];
-#if LOG
-			Console.WriteLine("Depth: {0,2} | Nodes: {1,8} | Evals: {2,8} | Pawns: {3,4} | Time: {4,5} ms | Best {5} | Eval: {6}", i, nodes, evals, pawnEvals, timer.MillisecondsElapsedThisTurn, bestMove.move, bestMove.evaluation);
-#endif
 
-			// time management
-			if (timer.MillisecondsElapsedThisTurn * 3 > timer.MillisecondsRemaining / 30)
-				break;
-		}
+            // time management
+            if (timer.MillisecondsElapsedThisTurn > timer.MillisecondsRemaining / 30)
+                break;
 
-#if LOG
-		Console.WriteLine("EllapsedTime: {0,5} ms | MaxTime: {1,5} ms | TimeLeft: {2,5} ms", timer.MillisecondsElapsedThisTurn, max_time, timer.MillisecondsRemaining);
-#endif
-		return bestMove.move;
+            // Aspiration Search
+            if (score < alpha || score > beta)
+            {
+                Console.WriteLine("Research depth: " + depth); //#DEBUG
+                alpha = int.MinValue + 1;
+                beta = int.MaxValue;
+            }
+            else
+            {
+                depth++;
+                alpha = score - 30;
+                beta = score + 30;
+            }
+        }
+        Console.WriteLine("Search depth: " + depth + ", Score: " + bestMove.evaluation); //#DEBUG
+		return bestMove.zobristHash == board.ZobristKey ? bestMove.move : board.GetLegalMoves()[0];
 	}
 
-    int CalcRecursive(Board board, sbyte currentDepth, int side, int alpha, int beta)
+    int CalcRecursive(Board board, int currentDepth, int side, int alpha, int beta)
 	{
-#if LOG
-		nodes++;
-#endif
+        if (board.IsRepeatedPosition())
+            return 0;
 
         ref Transposition transposition = ref transposTable[board.ZobristKey & k_TpMask];
 
@@ -107,7 +107,8 @@ public class MyBot : IChessBot
         if (qsearch)
         {
             bestScore = eval;
-            if (bestScore >= beta) return bestScore;
+            if (bestScore >= beta) 
+                return bestScore;
             alpha = Math.Max(alpha, bestScore);
         }
 
@@ -132,6 +133,9 @@ public class MyBot : IChessBot
         int origAlpha = alpha;
         for (int i = 0; i < moves.Length; i++)
         {
+            if (timer.MillisecondsElapsedThisTurn > timer.MillisecondsRemaining / 30)
+                return int.MaxValue;
+
             // Incrementally sort moves
             for (int j = i + 1; j < moves.Length; j++)
             {
@@ -141,25 +145,33 @@ public class MyBot : IChessBot
 
 			Move move = moves[i];
             board.MakeMove(move);
-			int score = -CalcRecursive(board, (sbyte) (currentDepth - 1), -side, -beta, -alpha);
-			board.UndoMove(move);
-			if (score >= beta)
-			{
-				// Fail soft beta
-				bestScore = score;
-				bestMove = move;
-				break;
-			}
+            int score;
+            //PVS
+            if (i == 0) // first move
+            {
+                score = -CalcRecursive(board, currentDepth - 1, -side, -beta, -alpha);
+            } 
+            else
+            {
+                score = -CalcRecursive(board, currentDepth - 1, -side, -alpha-1, -alpha);
+                if (score > alpha && score < beta)
+                    score = -CalcRecursive(board, currentDepth - 1, -side, -beta, -alpha);
+            }
+            board.UndoMove(move);
 			if (score > bestScore)
             {
 				bestScore = score;
                 bestMove = move;
-				alpha = Math.Max(alpha, score);
+                alpha = Math.Max(alpha, score);
+                // Fail soft beta
+                if (score >= beta)
+                    break;
             }
         }
 
         // End cases
-        if (!qsearch && moves.Length == 0) return board.IsInCheck() ? -30000 + board.PlyCount : 0;
+        if (!qsearch && moves.Length == 0)
+            return board.IsInCheck() ? int.MinValue + board.PlyCount : 0;
 
         // Did we fail high/low or get an exact score?
         int bound = bestScore >= beta ? 3 : bestScore > origAlpha ? 2 : 1;
@@ -168,7 +180,7 @@ public class MyBot : IChessBot
         transposition.zobristHash = board.ZobristKey;
 		transposition.move = bestMove;
 		transposition.evaluation = bestScore;
-		transposition.depth = currentDepth;
+		transposition.depth = (sbyte) currentDepth;
 		transposition.bound = (sbyte) bound;
 		return bestScore;
 	}
@@ -176,9 +188,6 @@ public class MyBot : IChessBot
 	// pieces of current player - pieces oppenent player + move options current player
 	int EvalMaterial(Board board, int side)
 	{
-#if LOG
-		evals++;
-#endif
 		int mg = 0, // midgame Values
             eg = 0, // endgame Values
             phase = 0; // progress to endgame
@@ -215,6 +224,6 @@ public class MyBot : IChessBot
 		public Move move;
 		public int evaluation;
 		public sbyte depth;
-		public sbyte bound; // 1 = Lower Bound, 2 = Upper Bound, 3 = Exact
+		public sbyte bound; // 2 = Lower Bound, 1 = Upper Bound, 3 = Exact
 	};
 }
