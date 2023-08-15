@@ -1,14 +1,17 @@
-﻿using ChessChallenge.API;
+﻿//#define POSITION
+//#define LOG
+using ChessChallenge.API;
 using System;
 using System.Linq;
 
+// TODO: RFP, futility pruning, and LMR: https://discord.com/channels/1132289356011405342/1140697049046724678/1140699400889454703
 public class MyBot : IChessBot
 {
     private int[] piecePhase = { 0, 0, 1, 1, 2, 4, 0 };
 
     //										  p    k    b    r    q   k
     private readonly short[] PieceValues = { 82, 337, 365, 447, 1025, 0, // Midgame
-                                             94, 281, 297, 512, 936, 0}; // Endgame
+                                             94, 281, 297, 512,  936, 0}; // Endgame
 
     // Big table packed with data from premade piece square tables
     // Unpack using PackedEvaluationTables[set, rank] = file
@@ -25,13 +28,19 @@ public class MyBot : IChessBot
     // pesto[64][12] 64 squares with values flipped for white, 12 piecetypes (first 6 mg, last 6 eg) pawn_mg, knight_mg, ..., queen_eg, king_eg
     private readonly int[][] unpackedPestoTables;
 
-    private const ulong k_TpMask = 0x7FFFFF; //4.7 million entries, likely consuming about 151 MB
-	private readonly Transposition[] transposTable; // ref  m_TPTable[zHash & k_TpMask]
+    private const ulong k_TpMask = 0x7FFFFF; //4.7 million entries, likely consuming about 151 MB, 01111111_11111111_11111111
+    private readonly Transposition[] transposTable; // ref  m_TPTable[zHash & k_TpMask]
 
 	// ulong 1 is WHITE BOTTOM LEFT (A1), MAX VALUE is EVERY TILE (11111....)
 
     int max_depth = 50; // n + 1, max depth will be 1 smaller
     Timer timer;
+
+#if LOG
+    int nullWindow = 0; //#DEBUG
+#endif
+
+    bool outOfTime() => timer.MillisecondsElapsedThisTurn > timer.MillisecondsRemaining / 30;
 
 	public MyBot()
 	{
@@ -49,10 +58,18 @@ public class MyBot : IChessBot
 
 	public Move Think(Board board, Timer timer)
     {
-		Transposition bestMove = transposTable[board.ZobristKey & k_TpMask];
+#if LOG
+        nullWindow = 0; //#DEBUG
+#endif
+        Transposition bestMove = transposTable[board.ZobristKey & k_TpMask];
         this.timer = timer;
 
-		if (timer.MillisecondsRemaining < 1000)
+#if POSITION
+        string fen = "1n1rr3/ppp1qpkp/3p2p1/3P4/5p2/PP2P1PB/3P3P/R2Q1RK1 w - - 0 17";
+        return printScores(fen, 7);
+#endif
+
+        if (timer.MillisecondsRemaining < 1000)
 			max_depth = 4;
 
         int beta = int.MaxValue, 
@@ -64,13 +81,15 @@ public class MyBot : IChessBot
 			bestMove = transposTable[board.ZobristKey & k_TpMask];
 
             // time management
-            if (timer.MillisecondsElapsedThisTurn > timer.MillisecondsRemaining / 30)
+            if (outOfTime())
                 break;
 
             // Aspiration Search
             if (score < alpha || score > beta)
             {
+#if LOG
                 Console.WriteLine("Research depth: " + depth); //#DEBUG
+#endif
                 alpha = int.MinValue + 1;
                 beta = int.MaxValue;
             }
@@ -81,8 +100,10 @@ public class MyBot : IChessBot
                 beta = score + 30;
             }
         }
-        Console.WriteLine("Search depth: " + depth + ", Score: " + bestMove.evaluation); //#DEBUG
-		return bestMove.zobristHash == board.ZobristKey ? bestMove.move : board.GetLegalMoves()[0];
+#if LOG
+        Console.WriteLine("Search depth: " + depth + ", Score: " + bestMove.evaluation + ", NullWindows: " + nullWindow); //#DEBUG
+#endif
+        return bestMove.zobristHash == board.ZobristKey ? bestMove.move : board.GetLegalMoves()[0];
 	}
 
     int CalcRecursive(Board board, int currentDepth, int side, int alpha, int beta)
@@ -133,8 +154,10 @@ public class MyBot : IChessBot
         int origAlpha = alpha;
         for (int i = 0; i < moves.Length; i++)
         {
-            if (timer.MillisecondsElapsedThisTurn > timer.MillisecondsRemaining / 30)
-                return int.MaxValue;
+#if !POSITION
+            if (outOfTime())
+                return 1_000_000;
+#endif
 
             // Incrementally sort moves
             for (int j = i + 1; j < moves.Length; j++)
@@ -148,14 +171,17 @@ public class MyBot : IChessBot
             int score;
             //PVS
             if (i == 0) // first move
-            {
                 score = -CalcRecursive(board, currentDepth - 1, -side, -beta, -alpha);
-            } 
             else
             {
                 score = -CalcRecursive(board, currentDepth - 1, -side, -alpha-1, -alpha);
                 if (score > alpha && score < beta)
+                {
+#if LOG
+                    nullWindow++; //#DEBUG
+#endif
                     score = -CalcRecursive(board, currentDepth - 1, -side, -beta, -alpha);
+                }
             }
             board.UndoMove(move);
 			if (score > bestScore)
@@ -171,7 +197,7 @@ public class MyBot : IChessBot
 
         // End cases
         if (!qsearch && moves.Length == 0)
-            return board.IsInCheck() ? int.MinValue + board.PlyCount : 0;
+            return board.IsInCheck() ? board.PlyCount - 300_000 : 0;
 
         // Did we fail high/low or get an exact score?
         int bound = bestScore >= beta ? 3 : bestScore > origAlpha ? 2 : 1;
@@ -226,4 +252,37 @@ public class MyBot : IChessBot
 		public sbyte depth;
 		public sbyte bound; // 2 = Lower Bound, 1 = Upper Bound, 3 = Exact
 	};
+
+#if POSITION
+    public Move printScores(string fenString, int depth)
+    {
+        Board board = Board.CreateBoardFromFEN(fenString);
+        Console.WriteLine(board.CreateDiagram());
+        Move[] moves = board.GetLegalMoves();
+        int[][] scores = new int[moves.Length][];
+
+        for (int i = 0; i < moves.Length; i++)
+        {
+            scores[i] = new int[depth];
+        }
+
+        for (int d = 0; d < depth; d++)
+        {
+            for (int i = 0; i < moves.Length; i++)
+            {
+                board.MakeMove(moves[i]);
+                scores[i][d] = -CalcRecursive(board, d, board.IsWhiteToMove ? 1 : -1, -1_000_000, 1_000_000);
+                board.UndoMove(moves[i]);
+            }
+        }
+        var orderedMoves = moves.Zip(scores).OrderByDescending(tuple => tuple.Second.Last()).Take(10).Select(tuple => tuple.First + " | " + tuple.Second.Select(i => string.Format("{0,11}", i)).Aggregate((first, second) => first + " | " + second)).ToArray();
+        Console.WriteLine("Depth: " + depth);
+        foreach (string s in orderedMoves)
+        {
+            Console.WriteLine(s);
+        }
+        Console.WriteLine(timer);
+        return moves[0];
+    }
+#endif
 }
