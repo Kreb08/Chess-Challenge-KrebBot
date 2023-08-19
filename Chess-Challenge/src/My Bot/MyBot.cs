@@ -1,5 +1,5 @@
 ﻿//#define POSITION
-//#define LOG
+#define LOG
 using ChessChallenge.API;
 using System;
 using System.Linq;
@@ -7,11 +7,10 @@ using System.Linq;
 // TODO: RFP, futility pruning, and LMR: https://discord.com/channels/1132289356011405342/1140697049046724678/1140699400889454703
 public class MyBot : IChessBot
 {
-    private int[] piecePhase = { 0, 0, 1, 1, 2, 4, 0 };
-
-    //										  p    k    b    r    q   k
-    private readonly short[] PieceValues = { 82, 337, 365, 447, 1025, 0, // Midgame
-                                             94, 281, 297, 512,  936, 0}; // Endgame
+    // pawn knight bishop rook queen king
+    private readonly int[] piecePhase = { 0, 1, 1, 2, 4, 0 },
+        PieceValues = { 82, 337, 365, 447, 1025, 0, // Midgame
+                        94, 281, 297, 512,  936, 0}; // Endgame
 
     // Big table packed with data from premade piece square tables
     // Unpack using PackedEvaluationTables[set, rank] = file
@@ -29,63 +28,51 @@ public class MyBot : IChessBot
     private readonly int[][] unpackedPestoTables;
 
     private const ulong k_TpMask = 0x7FFFFF; //4.7 million entries, likely consuming about 151 MB, 01111111_11111111_11111111
-    private readonly Transposition[] transposTable; // ref  m_TPTable[zHash & k_TpMask]
+    private readonly TTEntry[] transposTable = new TTEntry[k_TpMask + 1]; // ref  m_TPTable[zHash & k_TpMask]
 
 	// ulong 1 is WHITE BOTTOM LEFT (A1), MAX VALUE is EVERY TILE (11111....)
 
-    int max_depth = 50; // n + 1, max depth will be 1 smaller
+    Board board;
     Timer timer;
-
-#if LOG
-    int nullWindow = 0; //#DEBUG
-#endif
+    Move bestMoveRoot;
 
     bool outOfTime() => timer.MillisecondsElapsedThisTurn > timer.MillisecondsRemaining / 30;
 
 	public MyBot()
 	{
-		transposTable = new Transposition[k_TpMask + 1];
-
         unpackedPestoTables = PackedPestoTables.Select(packedTable =>
         {
             int pieceType = 0;
-            return decimal.GetBits(packedTable).Take(3)
-                .SelectMany(c => BitConverter.GetBytes(c)
-                    .Select((byte square) => (int)((sbyte)square * 1.461) + PieceValues[pieceType++]))
+            return new System.Numerics.BigInteger(packedTable).ToByteArray().Take(12)
+                    .Select((byte square) => (int)((sbyte)square * 1.461) + PieceValues[pieceType++])
                 .ToArray();
         }).ToArray();
     }
 
 	public Move Think(Board board, Timer timer)
     {
-#if LOG
-        nullWindow = 0; //#DEBUG
-#endif
-        Transposition bestMove = transposTable[board.ZobristKey & k_TpMask];
+        TTEntry bestMove = transposTable[board.ZobristKey & k_TpMask];
         this.timer = timer;
+        this.board = board;
 
 #if POSITION
         string fen = "1n1rr3/ppp1qpkp/3p2p1/3P4/5p2/PP2P1PB/3P3P/R2Q1RK1 w - - 0 17";
         return printScores(fen, 7);
 #endif
 
-        if (timer.MillisecondsRemaining < 1000)
-			max_depth = 4;
-
         int beta = int.MaxValue, 
             alpha = -beta, 
             depth = 1;
-        while (depth < max_depth)
+        while (!outOfTime())
 		{
-			int score = CalcRecursive(board, depth, board.IsWhiteToMove ? 1 : -1, alpha, beta);
-			bestMove = transposTable[board.ZobristKey & k_TpMask];
+			int score = CalcRecursive(depth, 0, alpha, beta);
 
-            // time management
-            if (outOfTime())
+            // checkmate found
+            if (score > 5_000)
                 break;
 
             // Aspiration Search
-            if (score < alpha || score > beta)
+            if (score <= alpha || score >= beta)
             {
 #if LOG
                 Console.WriteLine("Research depth: " + depth); //#DEBUG
@@ -101,27 +88,36 @@ public class MyBot : IChessBot
             }
         }
 #if LOG
-        Console.WriteLine("Search depth: " + depth + ", Score: " + bestMove.evaluation + ", NullWindows: " + nullWindow); //#DEBUG
+        Console.WriteLine("Search depth: " + depth + ", Score: " + bestMove.eval); //#DEBUG
 #endif
-        return bestMove.zobristHash == board.ZobristKey ? bestMove.move : board.GetLegalMoves()[0];
+        return bestMoveRoot;
 	}
 
-    int CalcRecursive(Board board, int currentDepth, int side, int alpha, int beta)
-	{
-        if (board.IsRepeatedPosition())
+    int CalcRecursive(int depth, int ply, int alpha, int beta)
+    {
+        bool root = ply++ == 0,
+            isInCheck = board.IsInCheck(),
+            pvNode = beta - alpha > 1;
+
+        if (!root && board.IsRepeatedPosition())
             return 0;
 
-        ref Transposition transposition = ref transposTable[board.ZobristKey & k_TpMask];
+        if (isInCheck)
+            depth++;
+
+        ulong zobristKey = board.ZobristKey;
+        TTEntry ttEntry = transposTable[zobristKey & k_TpMask];
 
         // TT cutoffs
-        if (transposition.zobristHash == board.ZobristKey && transposition.depth >= currentDepth && (
-			transposition.bound == 3 // exact score
-            || transposition.bound == 2 && transposition.evaluation >= beta // lower bound, fail high
-            || transposition.bound == 1 && transposition.evaluation <= alpha // upper bound, fail low
-        )) return transposition.evaluation;
+        if (ttEntry.zobristHash == zobristKey && !root && ttEntry.depth >= depth && (
+			ttEntry.bound == 3 // exact score
+            || ttEntry.bound == 2 && ttEntry.eval >= beta // lower bound, fail high
+            || ttEntry.bound == 1 && ttEntry.eval <= alpha // upper bound, fail low
+        )) return ttEntry.eval;
 
-        bool qsearch = currentDepth <= 0;
-        int eval = EvalMaterial(board, side);
+        bool qsearch = depth <= 0,
+            can_futility_prune = false;
+        int eval = Eval();
         int bestScore = int.MinValue;
 
         // Quiescence search is in the same function as negamax to save tokens
@@ -132,33 +128,42 @@ public class MyBot : IChessBot
                 return bestScore;
             alpha = Math.Max(alpha, bestScore);
         }
+        else if (!pvNode && !isInCheck)
+        {
+            // Reverse Futility Pruning
+            if (depth < 7 && eval - 94 * depth >= beta)
+                return eval;
+            // Futility Pruning
+            can_futility_prune = depth < 6 && eval + 94 * depth <= alpha;
+        }
 
         Span<Move> moves = stackalloc Move[256];
 		board.GetLegalMovesNonAlloc(ref moves, qsearch);
-        int[] scores = new int[moves.Length];
+
+        // End cases
+        if (!qsearch && moves.Length == 0)
+            return isInCheck ? ply - 300_000 : 0;
 
         // Score moves
-        for (int i = 0; i < moves.Length; i++)
+        int[] scores = new int[moves.Length];
+        for (int m = 0; m < moves.Length; m++)
         {
-            Move move = moves[i];
+            Move move = moves[m];
             // TT move
-            if (move == transposition.move) 
-				scores[i] = 1000000;
+            if (move == ttEntry.move) 
+				scores[m] = 1_000_000;
             // https://www.chessprogramming.org/MVV-LVA
             else if (move.IsCapture)
-				scores[i] = 100 * (int)move.CapturePieceType - (int)move.MovePieceType;
+				scores[m] = 100 * (int)move.CapturePieceType - (int)move.MovePieceType;
         }
 
+        Move bestMove = Move.NullMove;
+        int score = 0, origAlpha = alpha, i = 0;
 
-		Move bestMove = Move.NullMove;
-        int origAlpha = alpha;
-        for (int i = 0; i < moves.Length; i++)
+        int Search(int nextAlpha) => score = -CalcRecursive(depth - 1, ply, -nextAlpha, -alpha);
+
+        for (; i < moves.Length; i++)
         {
-#if !POSITION
-            if (outOfTime())
-                return 1_000_000;
-#endif
-
             // Incrementally sort moves
             for (int j = i + 1; j < moves.Length; j++)
             {
@@ -167,91 +172,85 @@ public class MyBot : IChessBot
             }
 
 			Move move = moves[i];
+
+            bool tactical = move.IsCapture || move.IsPromotion;
+            // Futility Pruning
+            if (can_futility_prune && !tactical && i > 0)
+                continue;
+
             board.MakeMove(move);
-            int score;
             //PVS
-            if (i == 0) // first move
-                score = -CalcRecursive(board, currentDepth - 1, -side, -beta, -alpha);
+            if (i == 0 || qsearch)
+                Search(beta);
             else
             {
-                score = -CalcRecursive(board, currentDepth - 1, -side, -alpha-1, -alpha);
+                Search(alpha + 1);
                 if (score > alpha && score < beta)
-                {
-#if LOG
-                    nullWindow++; //#DEBUG
-#endif
-                    score = -CalcRecursive(board, currentDepth - 1, -side, -beta, -alpha);
-                }
+                    Search(beta);
             }
             board.UndoMove(move);
+
 			if (score > bestScore)
             {
 				bestScore = score;
                 bestMove = move;
+
+                if (root) bestMoveRoot = move;
+
                 alpha = Math.Max(alpha, score);
                 // Fail soft beta
                 if (score >= beta)
                     break;
             }
+
+#if !POSITION
+            if (outOfTime())
+                return 1_000_000;
+#endif
         }
 
-        // End cases
-        if (!qsearch && moves.Length == 0)
-            return board.IsInCheck() ? board.PlyCount - 300_000 : 0;
-
-        // Did we fail high/low or get an exact score?
-        int bound = bestScore >= beta ? 3 : bestScore > origAlpha ? 2 : 1;
-
         // update cache with best move
-        transposition.zobristHash = board.ZobristKey;
-		transposition.move = bestMove;
-		transposition.evaluation = bestScore;
-		transposition.depth = (sbyte) currentDepth;
-		transposition.bound = (sbyte) bound;
+        transposTable[zobristKey & 0x3FFFFF] = new TTEntry(
+            zobristKey,
+            bestMove,
+            bestScore,
+            depth,
+            bestScore >= beta ? 3 : bestScore > origAlpha ? 2 : 1
+        );
 		return bestScore;
 	}
 
-	// pieces of current player - pieces oppenent player + move options current player
-	int EvalMaterial(Board board, int side)
+	int Eval()
 	{
-		int mg = 0, // midgame Values
+        int mg = 0, // midgame Values
             eg = 0, // endgame Values
-            phase = 0; // progress to endgame
+            phase = 0, // progress to endgame
+            stm = 2,
+            p;
 
         // sum up values, according to white side
-        foreach (bool stm in new[] { true, false })
+        for(; --stm >= 0; mg = -mg, eg = -eg)
         {
-            for (PieceType p = PieceType.Pawn; p <= PieceType.King; p++)
+            for (p = -1; ++p < 6;)
             {
-                int pieceType = (int) p;
-                ulong pieces = board.GetPieceBitboard(p, stm);
+                ulong pieces = board.GetPieceBitboard((PieceType) p + 1, stm > 0);
                 while (pieces > 0)
                 {
-                    phase += piecePhase[pieceType];
-                    int pieceIndex = BitboardHelper.ClearAndGetIndexOfLSB(ref pieces) ^ (stm ? 56 : 0); // flip for white (tables are for black side)
-                    mg += unpackedPestoTables[pieceIndex][pieceType - 1];
-                    eg += unpackedPestoTables[pieceIndex][pieceType + 5];
+                    phase += piecePhase[p];
+                    int pieceIndex = BitboardHelper.ClearAndGetIndexOfLSB(ref pieces) ^ 56 * stm; // flip for white (tables are for black side)
+                    mg += unpackedPestoTables[pieceIndex][p];
+                    eg += unpackedPestoTables[pieceIndex][p+6];
                 }
             }
             // sum up white values, negate, sum up black values, negate again
             // essentialy: white - black
-            mg = -mg;
-            eg = -eg;
         }
         phase = Math.Min(phase, 24);
         // combine scores and flip score depending on side
-        return (mg * phase + eg * (24 - phase)) / 24 * side;
+        return (mg * phase + eg * (24 - phase)) / 24 * (board.IsWhiteToMove ? 1 : -1);
 	}
 
-    //14 bytes per entry, likely will align to 16 bytes due to padding (if it aligns to 32, recalculate max TP table size)
-	public struct Transposition
-	{
-		public ulong zobristHash;
-		public Move move;
-		public int evaluation;
-		public sbyte depth;
-		public sbyte bound; // 2 = Lower Bound, 1 = Upper Bound, 3 = Exact
-	};
+	record struct TTEntry(ulong zobristHash, Move move, int eval, int depth, int bound);
 
 #if POSITION
     public Move printScores(string fenString, int depth)
@@ -271,7 +270,7 @@ public class MyBot : IChessBot
             for (int i = 0; i < moves.Length; i++)
             {
                 board.MakeMove(moves[i]);
-                scores[i][d] = -CalcRecursive(board, d, board.IsWhiteToMove ? 1 : -1, -1_000_000, 1_000_000);
+                scores[i][d] = -CalcRecursive(d, board.IsWhiteToMove ? 1 : -1, -1_000_000, 1_000_000);
                 board.UndoMove(moves[i]);
             }
         }
