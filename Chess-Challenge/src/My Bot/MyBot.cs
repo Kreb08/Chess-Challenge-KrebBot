@@ -1,5 +1,5 @@
 ﻿//#define POSITION
-#define LOG
+//#define LOG
 using ChessChallenge.API;
 using System;
 using System.Linq;
@@ -14,7 +14,23 @@ public class MyBot : IChessBot
 
     // Big table packed with data from premade piece square tables
     // Unpack using PackedEvaluationTables[set, rank] = file
-    private readonly decimal[] PackedPestoTables = {
+    // pesto[64][12] 64 squares with values flipped for white, 12 piecetypes (first 6 mg, last 6 eg) pawn_mg, knight_mg, ..., queen_eg, king_eg
+    private readonly int[][] unpackedPestoTables;
+
+    private readonly TTEntry[] transposTable = new TTEntry[0x7FFFFF + 1]; // ref  m_TPTable[zHash & k_TpMask], 4.7 million entries, likely consuming about 151 MB, 01111111_11111111_11111111
+
+    // ulong 1 is WHITE BOTTOM LEFT (A1), MAX VALUE is EVERY TILE (11111....)
+
+    Board board;
+    Timer timer;
+    Move bestMoveRoot;
+    Move[] killers = new Move[2048];
+
+    bool outOfTime() => timer.MillisecondsElapsedThisTurn > timer.MillisecondsRemaining / 30;
+
+	public MyBot()
+	{
+        unpackedPestoTables = new[] {
             63746705523041458768562654720m, 71818693703096985528394040064m, 75532537544690978830456252672m, 75536154932036771593352371712m, 76774085526445040292133284352m, 3110608541636285947269332480m, 936945638387574698250991104m, 75531285965747665584902616832m,
             77047302762000299964198997571m, 3730792265775293618620982364m, 3121489077029470166123295018m, 3747712412930601838683035969m, 3763381335243474116535455791m, 8067176012614548496052660822m, 4977175895537975520060507415m, 2475894077091727551177487608m,
             2458978764687427073924784380m, 3718684080556872886692423941m, 4959037324412353051075877138m, 3135972447545098299460234261m, 4371494653131335197311645996m, 9624249097030609585804826662m, 9301461106541282841985626641m, 2793818196182115168911564530m,
@@ -23,24 +39,7 @@ public class MyBot : IChessBot
             75502243563200070682362835182m, 78896921543467230670583692029m, 2489164206166677455700101373m, 4338830174078735659125311481m, 4960199192571758553533648130m, 3420013420025511569771334658m, 1557077491473974933188251927m, 77376040767919248347203368440m,
             73949978050619586491881614568m, 77043619187199676893167803647m, 1212557245150259869494540530m, 3081561358716686153294085872m, 3392217589357453836837847030m, 1219782446916489227407330320m, 78580145051212187267589731866m, 75798434925965430405537592305m,
             68369566912511282590874449920m, 72396532057599326246617936384m, 75186737388538008131054524416m, 77027917484951889231108827392m, 73655004947793353634062267392m, 76417372019396591550492896512m, 74568981255592060493492515584m, 70529879645288096380279255040m,
-        };
-    // pesto[64][12] 64 squares with values flipped for white, 12 piecetypes (first 6 mg, last 6 eg) pawn_mg, knight_mg, ..., queen_eg, king_eg
-    private readonly int[][] unpackedPestoTables;
-
-    private const ulong k_TpMask = 0x7FFFFF; //4.7 million entries, likely consuming about 151 MB, 01111111_11111111_11111111
-    private readonly TTEntry[] transposTable = new TTEntry[k_TpMask + 1]; // ref  m_TPTable[zHash & k_TpMask]
-
-	// ulong 1 is WHITE BOTTOM LEFT (A1), MAX VALUE is EVERY TILE (11111....)
-
-    Board board;
-    Timer timer;
-    Move bestMoveRoot;
-
-    bool outOfTime() => timer.MillisecondsElapsedThisTurn > timer.MillisecondsRemaining / 30;
-
-	public MyBot()
-	{
-        unpackedPestoTables = PackedPestoTables.Select(packedTable =>
+        }.Select(packedTable =>
         {
             int pieceType = 0;
             return new System.Numerics.BigInteger(packedTable).ToByteArray().Take(12)
@@ -51,17 +50,16 @@ public class MyBot : IChessBot
 
 	public Move Think(Board board, Timer timer)
     {
-        TTEntry bestMove = transposTable[board.ZobristKey & k_TpMask];
         this.timer = timer;
         this.board = board;
 
 #if POSITION
-        string fen = "1n1rr3/ppp1qpkp/3p2p1/3P4/5p2/PP2P1PB/3P3P/R2Q1RK1 w - - 0 17";
+        string fen = "rnbqk1nr/1pp1bppp/p3p3/3p4/3PP3/2N2P2/PPPB2PP/R2QKBNR w KQkq - 0 6";
         return printScores(fen, 7);
 #endif
 
-        int beta = int.MaxValue, 
-            alpha = -beta, 
+        int beta = 1_000_000,
+            alpha = -beta,
             depth = 1;
         while (!outOfTime())
 		{
@@ -75,7 +73,7 @@ public class MyBot : IChessBot
             if (score <= alpha || score >= beta)
             {
 #if LOG
-                Console.WriteLine("Research depth: " + depth); //#DEBUG
+                //Console.WriteLine("Research depth: " + depth); //#DEBUG
 #endif
                 alpha = int.MinValue + 1;
                 beta = int.MaxValue;
@@ -88,7 +86,7 @@ public class MyBot : IChessBot
             }
         }
 #if LOG
-        Console.WriteLine("Search depth: " + depth + ", Score: " + bestMove.eval); //#DEBUG
+        Console.WriteLine("  Search depth: " + depth + ", Score: " + transposTable[board.ZobristKey & 0x7FFFFF].eval); //#DEBUG
 #endif
         return bestMoveRoot;
 	}
@@ -106,7 +104,7 @@ public class MyBot : IChessBot
             depth++;
 
         ulong zobristKey = board.ZobristKey;
-        TTEntry ttEntry = transposTable[zobristKey & k_TpMask];
+        TTEntry ttEntry = transposTable[zobristKey & 0x7FFFFF];
 
         // TT cutoffs
         if (ttEntry.zobristHash == zobristKey && !root && ttEntry.depth >= depth && (
@@ -117,8 +115,9 @@ public class MyBot : IChessBot
 
         bool qsearch = depth <= 0,
             can_futility_prune = false;
-        int eval = Eval();
-        int bestScore = int.MinValue;
+        int eval = Eval(),
+            bestScore = int.MinValue,
+            movesScoreIndex = 0;
 
         // Quiescence search is in the same function as negamax to save tokens
         if (qsearch)
@@ -144,18 +143,13 @@ public class MyBot : IChessBot
         if (!qsearch && moves.Length == 0)
             return isInCheck ? ply - 300_000 : 0;
 
-        // Score moves
+        // Score moves for sorting
         int[] scores = new int[moves.Length];
-        for (int m = 0; m < moves.Length; m++)
-        {
-            Move move = moves[m];
-            // TT move
-            if (move == ttEntry.move) 
-				scores[m] = 1_000_000;
-            // https://www.chessprogramming.org/MVV-LVA
-            else if (move.IsCapture)
-				scores[m] = 100 * (int)move.CapturePieceType - (int)move.MovePieceType;
-        }
+        foreach (Move move in moves)
+            scores[movesScoreIndex++] =
+                move == ttEntry.move ? 1_000_000 : // last best move
+                move.IsCapture ? 10_000 * (int)move.CapturePieceType - (int)move.MovePieceType : // MVV-LVA
+                killers[ply] == move ? 1_000 : 0;
 
         Move bestMove = Move.NullMove;
         int score = 0, origAlpha = alpha, i = 0;
@@ -200,7 +194,14 @@ public class MyBot : IChessBot
                 alpha = Math.Max(alpha, score);
                 // Fail soft beta
                 if (score >= beta)
+                {
+                    // Update history tables
+                    if (!move.IsCapture)
+                    {
+                        killers[ply] = move;
+                    }
                     break;
+                }
             }
 
 #if !POSITION
@@ -210,7 +211,7 @@ public class MyBot : IChessBot
         }
 
         // update cache with best move
-        transposTable[zobristKey & 0x3FFFFF] = new TTEntry(
+        transposTable[zobristKey & 0x7FFFFF] = new TTEntry(
             zobristKey,
             bestMove,
             bestScore,
@@ -229,7 +230,7 @@ public class MyBot : IChessBot
             p;
 
         // sum up values, according to white side
-        for(; --stm >= 0; mg = -mg, eg = -eg)
+        for (; --stm >= 0; mg = -mg, eg = -eg)
         {
             for (p = -1; ++p < 6;)
             {
@@ -242,8 +243,6 @@ public class MyBot : IChessBot
                     eg += unpackedPestoTables[pieceIndex][p+6];
                 }
             }
-            // sum up white values, negate, sum up black values, negate again
-            // essentialy: white - black
         }
         phase = Math.Min(phase, 24);
         // combine scores and flip score depending on side
@@ -255,7 +254,7 @@ public class MyBot : IChessBot
 #if POSITION
     public Move printScores(string fenString, int depth)
     {
-        Board board = Board.CreateBoardFromFEN(fenString);
+        board = Board.CreateBoardFromFEN(fenString);
         Console.WriteLine(board.CreateDiagram());
         Move[] moves = board.GetLegalMoves();
         int[][] scores = new int[moves.Length][];
@@ -270,7 +269,7 @@ public class MyBot : IChessBot
             for (int i = 0; i < moves.Length; i++)
             {
                 board.MakeMove(moves[i]);
-                scores[i][d] = -CalcRecursive(d, board.IsWhiteToMove ? 1 : -1, -1_000_000, 1_000_000);
+                scores[i][d] = -CalcRecursive(d, 1, -1_000_000, 1_000_000);
                 board.UndoMove(moves[i]);
             }
         }
@@ -280,6 +279,7 @@ public class MyBot : IChessBot
         {
             Console.WriteLine(s);
         }
+        Console.WriteLine("Avarage: " + scores.Select(s => s.Last()).Sum() / moves.Length);
         Console.WriteLine(timer);
         return moves[0];
     }
