@@ -25,8 +25,9 @@ public class MyBot : IChessBot
     Timer timer;
     Move bestMoveRoot;
     Move[] killers = new Move[2048];
+    int turns;
 
-    bool outOfTime() => timer.MillisecondsElapsedThisTurn > timer.MillisecondsRemaining / 30;
+    bool outOfTime() => timer.MillisecondsElapsedThisTurn > timer.MillisecondsRemaining / turns;
 
 	public MyBot()
 	{
@@ -40,18 +41,17 @@ public class MyBot : IChessBot
             73949978050619586491881614568m, 77043619187199676893167803647m, 1212557245150259869494540530m, 3081561358716686153294085872m, 3392217589357453836837847030m, 1219782446916489227407330320m, 78580145051212187267589731866m, 75798434925965430405537592305m,
             68369566912511282590874449920m, 72396532057599326246617936384m, 75186737388538008131054524416m, 77027917484951889231108827392m, 73655004947793353634062267392m, 76417372019396591550492896512m, 74568981255592060493492515584m, 70529879645288096380279255040m,
         }.Select(packedTable =>
-        {
-            int pieceType = 0;
-            return new System.Numerics.BigInteger(packedTable).ToByteArray().Take(12)
-                    .Select((byte square) => (int)((sbyte)square * 1.461) + PieceValues[pieceType++])
-                .ToArray();
-        }).ToArray();
+            new System.Numerics.BigInteger(packedTable).ToByteArray().Take(12)
+                    .Select((byte square) => (int)((sbyte)square * 1.461) + PieceValues[turns++ % 12])
+                .ToArray()
+        ).ToArray();
     }
 
 	public Move Think(Board board, Timer timer)
     {
         this.timer = timer;
         this.board = board;
+        turns = board.IsInCheck() ? 20 : 30; // allocate more time when in check
 
 #if POSITION
         string fen = "rnbqk1nr/1pp1bppp/p3p3/3p4/3PP3/2N2P2/PPPB2PP/R2QKBNR w KQkq - 0 6";
@@ -75,8 +75,8 @@ public class MyBot : IChessBot
 #if LOG
                 //Console.WriteLine("Research depth: " + depth); //#DEBUG
 #endif
-                alpha = int.MinValue + 1;
-                beta = int.MaxValue;
+                beta = 1_000_000;
+                alpha = -beta;
             }
             else
             {
@@ -100,9 +100,6 @@ public class MyBot : IChessBot
         if (!root && board.IsRepeatedPosition())
             return 0;
 
-        if (isInCheck)
-            depth++;
-
         ulong zobristKey = board.ZobristKey;
         TTEntry ttEntry = transposTable[zobristKey & 0x7FFFFF];
 
@@ -116,7 +113,7 @@ public class MyBot : IChessBot
         bool qsearch = depth <= 0,
             can_futility_prune = false;
         int eval = Eval(),
-            bestScore = int.MinValue,
+            bestScore = -100_000_000,
             movesScoreIndex = 0;
 
         // Quiescence search is in the same function as negamax to save tokens
@@ -127,7 +124,9 @@ public class MyBot : IChessBot
                 return bestScore;
             alpha = Math.Max(alpha, bestScore);
         }
-        else if (!pvNode && !isInCheck)
+        else if (isInCheck)
+            depth++; // search extension
+        else if (!pvNode)
         {
             // Reverse Futility Pruning
             if (depth < 7 && eval - 94 * depth >= beta)
@@ -156,7 +155,7 @@ public class MyBot : IChessBot
             scores[movesScoreIndex++] =
                 move == ttEntry.move ? 1_000_000 : // last best move
                 move.IsCapture ? 10_000 * (int)move.CapturePieceType - (int)move.MovePieceType : // MVV-LVA
-                killers[ply] == move ? 1_000 : 0;
+                killers[ply] == move ? 1_000 : 0; // killer move
 
         Move bestMove = Move.NullMove;
         int score = 0, origAlpha = alpha, i = 0;
