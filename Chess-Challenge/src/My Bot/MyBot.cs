@@ -63,7 +63,7 @@ public class MyBot : IChessBot
             depth = 1;
         while (!outOfTime())
 		{
-			int score = CalcRecursive(depth, 0, alpha, beta);
+			int score = CalcRecursive(depth, 0, alpha, beta, true);
 
             // checkmate found
             if (score > 5_000)
@@ -91,7 +91,7 @@ public class MyBot : IChessBot
         return bestMoveRoot;
 	}
 
-    int CalcRecursive(int depth, int ply, int alpha, int beta)
+    int CalcRecursive(int depth, int ply, int alpha, int beta, bool nullMoveAllowed)
     {
         bool root = ply++ == 0,
             isInCheck = board.IsInCheck(),
@@ -132,6 +132,13 @@ public class MyBot : IChessBot
             // Reverse Futility Pruning
             if (depth < 7 && eval - 94 * depth >= beta)
                 return eval;
+            // Null Move Pruning
+            if (nullMoveAllowed && depth > 1 && board.TrySkipTurn()) // TODO: Check Gamephase
+            {
+                int s = -CalcRecursive(depth - 3, ply, -beta, -alpha, false);
+                board.UndoSkipTurn();
+                if (s >= beta) return s;
+            }
             // Futility Pruning
             can_futility_prune = depth < 6 && eval + 94 * depth <= alpha;
         }
@@ -154,7 +161,7 @@ public class MyBot : IChessBot
         Move bestMove = Move.NullMove;
         int score = 0, origAlpha = alpha, i = 0;
 
-        int Search(int nextAlpha) => score = -CalcRecursive(depth - 1, ply, -nextAlpha, -alpha);
+        int Search(int nextAlpha) => score = -CalcRecursive(depth - 1, ply, -nextAlpha, -alpha, nullMoveAllowed);
 
         for (; i < moves.Length; i++)
         {
@@ -269,7 +276,7 @@ public class MyBot : IChessBot
             for (int i = 0; i < moves.Length; i++)
             {
                 board.MakeMove(moves[i]);
-                scores[i][d] = -CalcRecursive(d, 1, -1_000_000, 1_000_000);
+                scores[i][d] = -CalcRecursive(d, 1, -1_000_000, 1_000_000, true);
                 board.UndoMove(moves[i]);
             }
         }
