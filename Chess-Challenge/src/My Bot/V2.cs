@@ -1,12 +1,11 @@
-﻿//#define POSITION
+//#define POSITION
 //#define LOG
-#define UCI
 using ChessChallenge.API;
 using System;
 using System.Linq;
 
 // TODO: RFP, futility pruning, and LMR: https://discord.com/channels/1132289356011405342/1140697049046724678/1140699400889454703
-public class MyBot : IChessBot
+public class V2 : IChessBot
 {
     // pawn knight bishop rook queen king
     private readonly int[] piecePhase = { 0, 1, 1, 2, 4, 0 },
@@ -26,15 +25,10 @@ public class MyBot : IChessBot
     Timer timer;
     Move bestMoveRoot;
     Move[] killers = new Move[2048];
-    int turns;
 
-    bool outOfTime() => timer.MillisecondsElapsedThisTurn > timer.MillisecondsRemaining / turns;
+    bool outOfTime() => timer.MillisecondsElapsedThisTurn > timer.MillisecondsRemaining / 30;
 
-#if UCI
-    private long nodes;
-#endif
-
-    public MyBot()
+    public V2()
     {
         unpackedPestoTables = new[] {
             63746705523041458768562654720m, 71818693703096985528394040064m, 75532537544690978830456252672m, 75536154932036771593352371712m, 76774085526445040292133284352m, 3110608541636285947269332480m, 936945638387574698250991104m, 75531285965747665584902616832m,
@@ -46,24 +40,22 @@ public class MyBot : IChessBot
             73949978050619586491881614568m, 77043619187199676893167803647m, 1212557245150259869494540530m, 3081561358716686153294085872m, 3392217589357453836837847030m, 1219782446916489227407330320m, 78580145051212187267589731866m, 75798434925965430405537592305m,
             68369566912511282590874449920m, 72396532057599326246617936384m, 75186737388538008131054524416m, 77027917484951889231108827392m, 73655004947793353634062267392m, 76417372019396591550492896512m, 74568981255592060493492515584m, 70529879645288096380279255040m,
         }.Select(packedTable =>
-            new System.Numerics.BigInteger(packedTable).ToByteArray().Take(12)
-                    .Select((byte square) => (int)((sbyte)square * 1.461) + PieceValues[turns++ % 12])
-                .ToArray()
-        ).ToArray();
+        {
+            int pieceType = 0;
+            return new System.Numerics.BigInteger(packedTable).ToByteArray().Take(12)
+                    .Select((byte square) => (int)((sbyte)square * 1.461) + PieceValues[pieceType++])
+                .ToArray();
+        }).ToArray();
     }
 
     public Move Think(Board board, Timer timer)
     {
         this.timer = timer;
         this.board = board;
-        turns = board.IsInCheck() ? 20 : 30; // allocate more time when in check
 
 #if POSITION
         string fen = "rnbqk1nr/1pp1bppp/p3p3/3p4/3PP3/2N2P2/PPPB2PP/R2QKBNR w KQkq - 0 6";
         return printScores(fen, 7);
-#endif
-#if UCI
-        nodes = 0;
 #endif
 
         int beta = 1_000_000,
@@ -80,38 +72,14 @@ public class MyBot : IChessBot
             // Aspiration Search
             if (score <= alpha || score >= beta)
             {
-                beta = 1_000_000;
-                alpha = -beta;
+#if LOG
+                //Console.WriteLine("Research depth: " + depth); //#DEBUG
+#endif
+                alpha = int.MinValue + 1;
+                beta = int.MaxValue;
             }
             else
             {
-#if UCI
-                string score_string = score.ToString();
-                if (score > 50000)
-                {
-                    int pliesToMate = 99999 - score;
-                    int mateInN = (pliesToMate / 2) + (pliesToMate % 2);
-                    score_string = "mate " + mateInN;
-                }
-                if (score < -50000)
-                {
-                    int pliesToMate = -99999 - score;
-                    int mateInN = (pliesToMate / 2) + (pliesToMate % 2);
-                    score_string = "mate " + mateInN;
-                }
-
-
-                // UCI Debug Logging
-                Console.WriteLine("info depth {0,2} score {1,7} nodes {2,9} nps {3,8} time {4,5} pv {5}{6}",
-                    depth,
-                    score_string,
-                    nodes,
-                    1000 * nodes / (timer.MillisecondsElapsedThisTurn + 1),
-                    timer.MillisecondsElapsedThisTurn,
-                    bestMoveRoot.StartSquare.Name,
-                    bestMoveRoot.TargetSquare.Name
-                );
-#endif
                 depth++;
                 alpha = score - 30;
                 beta = score + 30;
@@ -120,23 +88,20 @@ public class MyBot : IChessBot
 #if LOG
         Console.WriteLine("  Search depth: " + depth + ", Score: " + transposTable[board.ZobristKey & 0x7FFFFF].eval); //#DEBUG
 #endif
-#if UCI
-        Console.WriteLine();
-#endif
         return bestMoveRoot;
     }
 
     int CalcRecursive(int depth, int ply, int alpha, int beta, bool nullMoveAllowed)
     {
-#if UCI
-        nodes++;
-#endif
         bool root = ply++ == 0,
             isInCheck = board.IsInCheck(),
             pvNode = beta - alpha > 1;
 
         if (!root && board.IsRepeatedPosition())
             return 0;
+
+        if (isInCheck)
+            depth++;
 
         ulong zobristKey = board.ZobristKey;
         TTEntry ttEntry = transposTable[zobristKey & 0x7FFFFF];
@@ -151,7 +116,7 @@ public class MyBot : IChessBot
         bool qsearch = depth <= 0,
             can_futility_prune = false;
         int eval = Eval(),
-            bestScore = -100_000_000,
+            bestScore = int.MinValue,
             movesScoreIndex = 0;
 
         // Quiescence search is in the same function as negamax to save tokens
@@ -162,9 +127,7 @@ public class MyBot : IChessBot
                 return bestScore;
             alpha = Math.Max(alpha, bestScore);
         }
-        else if (isInCheck)
-            depth++; // search extension
-        else if (!pvNode)
+        else if (!pvNode && !isInCheck)
         {
             // Reverse Futility Pruning
             if (depth < 7 && eval - 94 * depth >= beta)
@@ -193,7 +156,7 @@ public class MyBot : IChessBot
             scores[movesScoreIndex++] =
                 move == ttEntry.move ? 1_000_000 : // last best move
                 move.IsCapture ? 10_000 * (int)move.CapturePieceType - (int)move.MovePieceType : // MVV-LVA
-                killers[ply] == move ? 1_000 : 0; // killer move
+                killers[ply] == move ? 1_000 : 0;
 
         Move bestMove = Move.NullMove;
         int score = 0, origAlpha = alpha, i = 0;
