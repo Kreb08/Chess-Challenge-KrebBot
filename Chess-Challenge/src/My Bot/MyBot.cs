@@ -1,5 +1,4 @@
 ﻿//#define POSITION
-//#define LOG
 #define UCI
 using ChessChallenge.API;
 using System;
@@ -26,12 +25,12 @@ public class MyBot : IChessBot
     Timer timer;
     Move bestMoveRoot;
     Move[] killers = new Move[2048];
-    int turns;
+    int mainScore;
 
-    bool outOfTime() => timer.MillisecondsElapsedThisTurn > timer.MillisecondsRemaining / turns;
+    bool outOfTime => timer.MillisecondsElapsedThisTurn > timer.MillisecondsRemaining / 30;
 
 #if UCI
-    private long nodes;
+    private long nodes; //#DEBUG
 #endif
 
     public MyBot()
@@ -47,7 +46,7 @@ public class MyBot : IChessBot
             68369566912511282590874449920m, 72396532057599326246617936384m, 75186737388538008131054524416m, 77027917484951889231108827392m, 73655004947793353634062267392m, 76417372019396591550492896512m, 74568981255592060493492515584m, 70529879645288096380279255040m,
         }.Select(packedTable =>
             new System.Numerics.BigInteger(packedTable).ToByteArray().Take(12)
-                    .Select((byte square) => (int)((sbyte)square * 1.461) + PieceValues[turns++ % 12])
+                    .Select((byte square) => (int)((sbyte)square * 1.461) + PieceValues[mainScore++ % 12])
                 .ToArray()
         ).ToArray();
     }
@@ -56,29 +55,42 @@ public class MyBot : IChessBot
     {
         this.timer = timer;
         this.board = board;
-        turns = board.IsInCheck() ? 20 : 30; // allocate more time when in check
 
 #if POSITION
-        string fen = "rnbqk1nr/1pp1bppp/p3p3/3p4/3PP3/2N2P2/PPPB2PP/R2QKBNR w KQkq - 0 6";
+        string fen = "8/8/8/8/8/1k6/p7/K7 b - - 1 62";
         return printScores(fen, 7);
 #endif
 #if UCI
-        nodes = 0;
+        nodes = 0;//#DEBUG
 #endif
 
         int beta = 1_000_000,
             alpha = -beta,
             depth = 1;
-        while (!outOfTime())
+        while (!outOfTime)
         {
-            int score = CalcRecursive(depth, 0, alpha, beta, true);
+            mainScore = CalcRecursive(depth, 0, alpha, beta, true);
+#if UCI
+            if (mainScore > 250_000 && mainScore != 1_000_000) //#DEBUG
+            { //#DEBUG
+                Console.WriteLine("info depth {0,2} score mate {1,5} nodes {2,9} nps {3,8} time {4,5} pv {5}{6}", //#DEBUG
+                    depth, //#DEBUG
+                    (depth + 1) / 2, //#DEBUG
+                    nodes, //#DEBUG
+                    1000 * nodes / (timer.MillisecondsElapsedThisTurn + 1), //#DEBUG
+                    timer.MillisecondsElapsedThisTurn, //#DEBUG
+                    bestMoveRoot.StartSquare.Name, //#DEBUG
+                    bestMoveRoot.TargetSquare.Name //#DEBUG
+                ); //#DEBUG
+            } //#DEBUG
+#endif
 
             // checkmate found
-            if (score > 5_000)
+            if (mainScore > 250_000)
                 break;
 
             // Aspiration Search
-            if (score <= alpha || score >= beta)
+            if (mainScore <= alpha || mainScore >= beta)
             {
                 beta = 1_000_000;
                 alpha = -beta;
@@ -86,42 +98,24 @@ public class MyBot : IChessBot
             else
             {
 #if UCI
-                string score_string = score.ToString();
-                if (score > 50000)
-                {
-                    int pliesToMate = 99999 - score;
-                    int mateInN = (pliesToMate / 2) + (pliesToMate % 2);
-                    score_string = "mate " + mateInN;
-                }
-                if (score < -50000)
-                {
-                    int pliesToMate = -99999 - score;
-                    int mateInN = (pliesToMate / 2) + (pliesToMate % 2);
-                    score_string = "mate " + mateInN;
-                }
-
-
                 // UCI Debug Logging
-                Console.WriteLine("info depth {0,2} score {1,7} nodes {2,9} nps {3,8} time {4,5} pv {5}{6}",
-                    depth,
-                    score_string,
-                    nodes,
-                    1000 * nodes / (timer.MillisecondsElapsedThisTurn + 1),
-                    timer.MillisecondsElapsedThisTurn,
-                    bestMoveRoot.StartSquare.Name,
-                    bestMoveRoot.TargetSquare.Name
-                );
+                Console.WriteLine("info depth {0,2} score cp {1,7} nodes {2,9} nps {3,8} time {4,5} pv {5}{6}", //#DEBUG
+                    depth, //#DEBUG
+                    mainScore.ToString(), //#DEBUG
+                    nodes, //#DEBUG
+                    1000 * nodes / (timer.MillisecondsElapsedThisTurn + 1), //#DEBUG
+                    timer.MillisecondsElapsedThisTurn, //#DEBUG
+                    bestMoveRoot.StartSquare.Name, //#DEBUG
+                    bestMoveRoot.TargetSquare.Name //#DEBUG
+                ); //#DEBUG
 #endif
                 depth++;
-                alpha = score - 30;
-                beta = score + 30;
+                alpha = mainScore - 30;
+                beta = mainScore + 30;
             }
         }
-#if LOG
-        Console.WriteLine("  Search depth: " + depth + ", Score: " + transposTable[board.ZobristKey & 0x7FFFFF].eval); //#DEBUG
-#endif
 #if UCI
-        Console.WriteLine();
+        Console.WriteLine(); //#DEBUG
 #endif
         return bestMoveRoot;
     }
@@ -129,14 +123,17 @@ public class MyBot : IChessBot
     int CalcRecursive(int depth, int ply, int alpha, int beta, bool nullMoveAllowed)
     {
 #if UCI
-        nodes++;
+        nodes++; //#DEBUG
 #endif
         bool root = ply++ == 0,
             isInCheck = board.IsInCheck(),
             pvNode = beta - alpha > 1;
 
-        if (!root && board.IsRepeatedPosition())
+        if (!root && board.IsDraw())
             return 0;
+
+        if (isInCheck)
+            depth++; // search extension
 
         ulong zobristKey = board.ZobristKey;
         TTEntry ttEntry = transposTable[zobristKey & 0x7FFFFF];
@@ -157,14 +154,12 @@ public class MyBot : IChessBot
         // Quiescence search is in the same function as negamax to save tokens
         if (qsearch)
         {
+            if (eval >= beta)
+                return eval;
             bestScore = eval;
-            if (bestScore >= beta)
-                return bestScore;
             alpha = Math.Max(alpha, bestScore);
         }
-        else if (isInCheck)
-            depth++; // search extension
-        else if (!pvNode)
+        else if (!pvNode && !isInCheck)
         {
             // Reverse Futility Pruning
             if (depth < 7 && eval - 94 * depth >= beta)
@@ -204,10 +199,8 @@ public class MyBot : IChessBot
         {
             // Incrementally sort moves
             for (int j = i + 1; j < moves.Length; j++)
-            {
                 if (scores[j] > scores[i])
                     (scores[i], scores[j], moves[i], moves[j]) = (scores[j], scores[i], moves[j], moves[i]);
-            }
 
             Move move = moves[i];
 
@@ -240,7 +233,7 @@ public class MyBot : IChessBot
                 if (score >= beta)
                 {
                     // Update history tables
-                    if (!move.IsCapture)
+                    if (!tactical)
                     {
                         killers[ply] = move;
                     }
@@ -249,7 +242,7 @@ public class MyBot : IChessBot
             }
 
 #if !POSITION
-            if (outOfTime())
+            if (outOfTime)
                 return 1_000_000;
 #endif
         }
@@ -271,23 +264,23 @@ public class MyBot : IChessBot
             eg = 0, // endgame Values
             phase = 0, // progress to endgame
             stm = 2,
-            p;
+            kingSafety = 0;
 
         // sum up values, according to white side
-        for (; --stm >= 0; mg = -mg, eg = -eg)
-        {
-            for (p = -1; ++p < 6;)
+        for (; stm-- > 0; mg = kingSafety - mg, eg = kingSafety - eg)
+            for (int p = 6; p-- > 0;)
             {
                 ulong pieces = board.GetPieceBitboard((PieceType)p + 1, stm > 0);
+                if (p == 0)
+                    kingSafety = -BitboardHelper.GetNumberOfSetBits(BitboardHelper.GetKingAttacks(board.GetKingSquare(stm > 0)) & pieces) * 10;
                 while (pieces > 0)
                 {
                     phase += piecePhase[p];
                     int pieceIndex = BitboardHelper.ClearAndGetIndexOfLSB(ref pieces) ^ 56 * stm; // flip for white (tables are for black side)
                     mg += unpackedPestoTables[pieceIndex][p];
-                    eg += unpackedPestoTables[pieceIndex][p + 6];
+                    eg += unpackedPestoTables[pieceIndex][p + 6]; 
                 }
             }
-        }
         phase = Math.Min(phase, 24);
         // combine scores and flip score depending on side
         return (mg * phase + eg * (24 - phase)) / 24 * (board.IsWhiteToMove ? 1 : -1);
